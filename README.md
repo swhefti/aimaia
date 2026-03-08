@@ -1,4 +1,4 @@
-# Portfolio Advisor
+# aiMAIA — Your AI Multi-Agent Investment Advisor
 
 A multi-agent investment portfolio advisor. Users set a financial goal; the system analyzes 100 assets daily and delivers plain-language recommendations and a daily briefing.
 
@@ -26,7 +26,7 @@ Five-layer system: Market Data → Analysis Agents → LLM Synthesis → Rules E
 | Backend runtime | Node.js 20 + TypeScript |
 | Frontend | Next.js 14 (App Router) |
 | Styling | Tailwind CSS |
-| LLM calls | Anthropic SDK (claude-opus-4-6) |
+| LLM calls | Anthropic SDK (claude-sonnet-4-20250514) |
 | Market data | Twelve Data + Finnhub |
 | Package manager | npm |
 | Validation | Zod |
@@ -45,7 +45,7 @@ Five-layer system: Market Data → Analysis Agents → LLM Synthesis → Rules E
 ```bash
 # 1. Clone the repo
 git clone <repo-url>
-cd portfolio-advisor
+cd aimaia
 
 # 2. Install all dependencies (root + workspaces)
 npm install
