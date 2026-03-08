@@ -20,7 +20,7 @@ export default function HomePage() {
 
   return (
     <main className="flex items-center justify-center min-h-screen">
-      <Spinner size="lg" message="Loading Portfolio Advisor..." />
+      <Spinner size="lg" message="Loading aiMAIA..." />
     </main>
   );
 }

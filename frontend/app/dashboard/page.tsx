@@ -13,6 +13,7 @@ import { PortfolioDonut } from '@/components/dashboard/portfolio-donut';
 import { PositionsTable } from '@/components/dashboard/positions-table';
 import { SettingsPanel } from '@/components/dashboard/settings-panel';
 import { AddPositionModal } from '@/components/dashboard/add-position-modal';
+import { Logo } from '@/components/ui/logo';
 import { SellPositionModal } from '@/components/dashboard/sell-position-modal';
 import { RecommendationCard } from '@/components/portfolio/recommendation-card';
 import { ReasoningModal } from '@/components/portfolio/reasoning-modal';
@@ -783,7 +784,7 @@ export default function DashboardPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold text-white">Portfolio Advisor</h1>
+            <Logo size="sm" variant="dark" />
             {isGuest && !isSimulation && (
               <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full">
                 Guest Mode

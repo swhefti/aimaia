@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { signIn, getAuthErrorMessage } from '@/lib/auth'
 import { useAuth } from '@/components/auth-provider'
 import { useSimulation } from '@/components/simulation-provider'
+import { Logo } from '@/components/ui/logo'
 
 export default function LoginPage() {
   return (
@@ -95,8 +96,8 @@ function LoginPageInner() {
       <div className="w-full max-w-sm">
 
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-[#1E3A5F]">Portfolio Advisor</h1>
-          <p className="text-slate-500 text-sm mt-1">Sign in to your account</p>
+          <Logo size="lg" variant="light" showSubtitle />
+          <p className="text-slate-500 text-sm mt-3">Sign in to your account</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
