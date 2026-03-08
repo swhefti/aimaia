@@ -1,0 +1,13 @@
+name: Ingest Prices
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger price ingestion
+        run: |
+          curl -f -X GET https://aimaia-frontend.vercel.app/api/cron/prices \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
