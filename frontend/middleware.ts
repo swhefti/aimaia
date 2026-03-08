@@ -12,6 +12,7 @@ export async function middleware(req: NextRequest) {
 
   const publicRoutes = ['/', '/login', '/signup', '/auth/callback', '/auth/reset-password']
   const isPublic = publicRoutes.some(route => pathname === route || pathname.startsWith('/auth/'))
+    || pathname.startsWith('/api/')
 
   // Allow guest mode through
   const isGuest = req.cookies.get('guest_mode')?.value === '1'
