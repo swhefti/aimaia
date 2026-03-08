@@ -42,3 +42,5 @@ coverage/
 
 # Claude Code
 .claude/
+.vercel
+.env*.local

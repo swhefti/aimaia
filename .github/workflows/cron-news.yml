@@ -1,0 +1,13 @@
+name: Ingest News
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger news ingestion
+        run: |
+          curl -f -X GET https://aimaia.vercel.app/api/cron/news \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
