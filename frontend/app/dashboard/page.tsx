@@ -728,6 +728,9 @@ export default function DashboardPage() {
     );
   }
 
+  const displayName = user?.user_metadata?.display_name as string | undefined;
+  const firstName = displayName?.split(' ')[0];
+
   const latest = valuations[valuations.length - 1];
   const previous = valuations.length > 1 ? valuations[valuations.length - 2] : undefined;
   const actionItems = items.filter((i) => i.action !== 'HOLD');
@@ -785,6 +788,9 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <Logo size="sm" variant="dark" />
+            {firstName && !isGuest && (
+              <span className="text-sm text-gray-300">{firstName}</span>
+            )}
             {isGuest && !isSimulation && (
               <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full">
                 Guest Mode
@@ -851,11 +857,13 @@ export default function DashboardPage() {
             ) : (
               <Card className="border-accent-blue/30 bg-gradient-to-br from-navy-800 to-navy-900">
                 <div className="space-y-3">
-                  <h2 className="text-lg font-semibold text-white">Portfolio Summary</h2>
+                  <h2 className="text-lg font-semibold text-white">
+                    {firstName ? `${firstName}'s Portfolio` : 'Portfolio Summary'}
+                  </h2>
                   {positions.length > 0 ? (
                     <>
                       <p className="text-sm text-gray-300 leading-relaxed">
-                        Your portfolio has <span className="text-white font-medium">{positions.length} position{positions.length !== 1 ? 's' : ''}</span> with{' '}
+                        {firstName ? `${firstName}, your` : 'Your'} portfolio has <span className="text-white font-medium">{positions.length} position{positions.length !== 1 ? 's' : ''}</span> with{' '}
                         <span className="text-white font-medium">{formatCurrency(investedValue)}</span> invested
                         and <span className="text-white font-medium">{formatCurrency(cashValue)}</span> in cash.
                         {!isGuest && ' The AI analysis pipeline runs daily — your first briefing will appear after the next analysis cycle.'}
@@ -894,6 +902,8 @@ export default function DashboardPage() {
                         ? 'Simulation mode active. Add positions and advance days to test the product.'
                         : isGuest
                         ? 'Welcome, Guest! Add positions to build your portfolio. Data is not saved.'
+                        : firstName
+                        ? `Welcome, ${firstName}! Add positions to start building your portfolio. The AI analysis will run daily.`
                         : 'Add positions to start building your portfolio. The AI analysis will run daily.'}
                     </p>
                   )}
