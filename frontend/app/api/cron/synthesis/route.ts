@@ -727,7 +727,7 @@ async function runSynthesisForPortfolio(
 
   let finalOutput: SynthesisOutput;
   let overrides: RulesOverride[] = [];
-  let runId: string;
+  let runId: string | undefined;
   let llmSucceeded = false;
 
   // 3. Try LLM synthesis
@@ -856,7 +856,7 @@ async function runSynthesisForPortfolio(
     finalOutput = generateFallbackRecommendations(scores, userAssetTypes, portfolioState);
 
     // Create fallback run record if we don't have one
-    if (!runId!) {
+    if (!runId) {
       const { data: fallbackRun } = await supabase
         .from('synthesis_runs')
         .insert({

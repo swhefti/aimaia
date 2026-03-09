@@ -1,13 +1,13 @@
-name: Run Scores and Conclusions
+name: Run Synthesis
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 23 * * *'
   workflow_dispatch:
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger scoring pipeline
+      - name: Trigger synthesis agent
         run: |
-          curl -f -X GET https://aimaia.vercel.app/api/cron/scores \
+          curl -f -X GET https://aimaia.vercel.app/api/cron/synthesis \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
