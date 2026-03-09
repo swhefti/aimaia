@@ -729,6 +729,7 @@ async function runSynthesisForPortfolio(
   let overrides: RulesOverride[] = [];
   let runId: string | undefined;
   let llmSucceeded = false;
+  let llmErrMsg: string | undefined;
 
   // 3. Try LLM synthesis
   try {
@@ -865,7 +866,8 @@ async function runSynthesisForPortfolio(
     }
   } catch (llmErr) {
     // Fallback to math-based recommendations
-    console.warn(`[Synthesis] LLM failed for ${portfolioId}, using fallback:`, llmErr instanceof Error ? llmErr.message : llmErr);
+    llmErrMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
+    console.warn(`[Synthesis] LLM failed for ${portfolioId}, using fallback:`, llmErrMsg);
 
     const { data: scoresData } = await supabase
       .from('agent_scores')
@@ -971,8 +973,9 @@ async function runSynthesisForPortfolio(
     }
   }
 
-  console.log(`[Synthesis] Complete for ${portfolioId}. ${validRecs.length} recommendations, ${overrides.length} overrides.`);
-  return `ok (${validRecs.length} recs, ${overrides.length} overrides, llm=${llmSucceeded})`;
+  const llmNote = llmSucceeded ? 'llm=true' : `llm=false (${llmErrMsg ?? 'fallback'})`;
+  console.log(`[Synthesis] Complete for ${portfolioId}. ${validRecs.length} recommendations, ${overrides.length} overrides. ${llmNote}`);
+  return `ok (${validRecs.length} recs, ${overrides.length} overrides, ${llmNote})`;
 }
 
 // ---- Main handler ----
