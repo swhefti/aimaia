@@ -50,6 +50,7 @@ export async function runSynthesisForPortfolio(
       volatilityTolerance: profileData.volatility_tolerance as 'moderate' | 'balanced' | 'tolerant',
       assetTypes: profileData.asset_types as ('stock' | 'etf' | 'crypto')[],
       maxPositions: Number(profileData.max_positions),
+      rebalancingPreference: (profileData.rebalancing_preference as 'daily' | 'weekly' | 'monthly') ?? 'daily',
     };
 
     // Build portfolio state for rules engine

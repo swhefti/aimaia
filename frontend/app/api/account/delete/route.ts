@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
       // 5. Delete recommendation items (via recommendation_runs)
       const { data: runs } = await admin
         .from('recommendation_runs')
-        .select('id')
+        .select('id, synthesis_run_id')
         .in('portfolio_id', portfolioIds);
 
       const runIds = (runs ?? []).map((r) => r.id as string);
