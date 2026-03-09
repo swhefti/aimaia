@@ -785,7 +785,7 @@ async function runSynthesisForPortfolio(
 
     const response = await anthropic.messages.create({
       model: SYNTHESIS_MODEL,
-      max_tokens: 1500,
+      max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     });
@@ -805,7 +805,7 @@ async function runSynthesisForPortfolio(
       // Retry with format reminder
       const retryResponse = await anthropic.messages.create({
         model: SYNTHESIS_MODEL,
-        max_tokens: 1500,
+        max_tokens: 4096,
         system: systemPrompt,
         messages: [
           { role: 'user', content: userPrompt },
