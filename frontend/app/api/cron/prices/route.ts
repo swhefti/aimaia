@@ -62,6 +62,7 @@ async function fetchPrice(
       low: parseFloat(d.low),
       close: parseFloat(d.close),
       volume: parseInt(d.volume) || 0,
+      ingested_at: new Date().toISOString(),
     }));
 
   if (rows.length === 0) return 'no valid prices';
