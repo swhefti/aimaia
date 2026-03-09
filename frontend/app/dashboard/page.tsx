@@ -88,10 +88,74 @@ export default function DashboardPage() {
   const [showAddPosition, setShowAddPosition] = useState(false);
   const [showSellPosition, setShowSellPosition] = useState(false);
   const [showRiskReport, setShowRiskReport] = useState(false);
+  const [aiOpusPct, setAiOpusPct] = useState<number | null>(null);
+  const [aiSonnetPct, setAiSonnetPct] = useState<number | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   // Fees preference
   const feesEnabled = typeof window !== 'undefined' && localStorage.getItem('maipa_include_fees') === 'true';
   const feeMultiplier = feesEnabled ? 0.99 : 1; // 1% fee on buys
+
+  // --- AI probability fetcher ---
+  const fetchAiProbability = useCallback(async (
+    prof: UserProfile,
+    pos: PortfolioPositionWithScore[],
+    prices: Record<string, number>,
+    tValue: number,
+    cValue: number,
+  ) => {
+    if (isGuest) return;
+    setAiLoading(true);
+    try {
+      const investmentCapital = prof.investmentCapital;
+      const costBasis = pos.reduce((sum, p) => sum + p.quantity * p.avgPurchasePrice, 0);
+      const cumulativeReturnPct = investmentCapital > 0
+        ? (tValue - investmentCapital) / investmentCapital
+        : 0;
+
+      const positionsPayload = pos.map((p) => {
+        const currentPrice = prices[p.ticker] ?? p.avgPurchasePrice;
+        const currentValue = p.quantity * currentPrice;
+        return {
+          ticker: p.ticker,
+          quantity: p.quantity,
+          avgPurchasePrice: p.avgPurchasePrice,
+          currentPrice,
+          currentValue,
+          allocationPct: tValue > 0 ? (currentValue / tValue) * 100 : 0,
+          unrealizedPnlPct: p.avgPurchasePrice > 0 ? (currentPrice - p.avgPurchasePrice) / p.avgPurchasePrice : 0,
+        };
+      });
+
+      const resp = await fetch('/api/portfolio/ai-probability', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          goalReturnPct: prof.goalReturnPct,
+          timeHorizonMonths: prof.timeHorizonMonths,
+          riskProfile: prof.riskProfile,
+          investmentCapital,
+          totalValue: tValue,
+          cashValue: cValue,
+          cumulativeReturnPct,
+          positions: positionsPayload,
+        }),
+      });
+
+      if (resp.ok) {
+        const result = await resp.json() as {
+          opus: { probability: number | null };
+          sonnet: { probability: number | null };
+        };
+        setAiOpusPct(result.opus.probability);
+        setAiSonnetPct(result.sonnet.probability);
+      }
+    } catch {
+      // Non-blocking — AI indicators just won't show
+    } finally {
+      setAiLoading(false);
+    }
+  }, [isGuest]);
 
   // --- Guest/Simulation mode loader ---
   const loadGuestDashboard = useCallback(async () => {
@@ -409,6 +473,17 @@ export default function DashboardPage() {
       );
       setAgentScores(scoresMap);
       setLatestScores(compositeMap);
+
+      // Fire AI probability request (non-blocking)
+      if (userProfile) {
+        const computedCashVal = pos.length > 0
+          ? Math.max(0, userProfile.investmentCapital - pos.reduce((s, p) => s + p.quantity * p.avgPurchasePrice, 0))
+          : userProfile.investmentCapital;
+        const computedTotalVal = pos.length > 0
+          ? pos.reduce((s, p) => s + p.quantity * (prices[p.ticker] ?? p.avgPurchasePrice), 0) + computedCashVal
+          : userProfile.investmentCapital;
+        fetchAiProbability(userProfile, pos, prices, computedTotalVal, computedCashVal);
+      }
     } catch (err) {
       console.error('Dashboard load error:', err);
     } finally {
@@ -531,7 +606,11 @@ export default function DashboardPage() {
         supabase, portfolioId, totalValue, cashValue, 0, cumulativeReturnPct, goalProbability
       );
     }
-  }, [supabase, isGuest, isSimulation, allPrices, allScores, asOfDate]);
+
+    // Refresh AI probability (non-blocking)
+    const mergedPrices = { ...allPrices, ...prices };
+    fetchAiProbability(currentProfile, currentPositions, mergedPrices, totalValue, cashValue);
+  }, [supabase, isGuest, isSimulation, allPrices, allScores, asOfDate, fetchAiProbability]);
 
   // --- Handlers ---
 
@@ -998,6 +1077,9 @@ export default function DashboardPage() {
                 probabilityPct={latest?.goalProbabilityPct ?? liveGoalProbability}
                 previousPct={previous?.goalProbabilityPct}
                 goalStatus={run?.goalStatus ?? probabilityToGoalStatus(latest?.goalProbabilityPct ?? liveGoalProbability)}
+                aiOpusPct={aiOpusPct}
+                aiSonnetPct={aiSonnetPct}
+                aiLoading={aiLoading}
               />
             )}
 

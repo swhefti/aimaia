@@ -11,6 +11,9 @@ interface GoalTrackerProps {
   probabilityPct: number;
   previousPct?: number | undefined;
   goalStatus: GoalStatus;
+  aiOpusPct?: number | null | undefined;
+  aiSonnetPct?: number | null | undefined;
+  aiLoading?: boolean | undefined;
 }
 
 export function GoalTracker({
@@ -19,6 +22,9 @@ export function GoalTracker({
   probabilityPct,
   previousPct,
   goalStatus,
+  aiOpusPct,
+  aiSonnetPct,
+  aiLoading,
 }: GoalTrackerProps) {
   return (
     <Card padding="sm">
@@ -31,7 +37,33 @@ export function GoalTracker({
           status={goalStatus}
           previousPct={previousPct}
         />
+        <div className="flex gap-4 pt-1">
+          <AiIndicator label="Opus" pct={aiOpusPct} loading={aiLoading} />
+          <AiIndicator label="Sonnet" pct={aiSonnetPct} loading={aiLoading} />
+        </div>
       </div>
     </Card>
+  );
+}
+
+function AiIndicator({ label, pct, loading }: { label: string; pct?: number | null | undefined; loading?: boolean | undefined }) {
+  const color = pct == null ? 'text-gray-500'
+    : pct >= 60 ? 'text-emerald-400'
+    : pct >= 40 ? 'text-amber-400'
+    : 'text-red-400';
+
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">{label}</span>
+      {loading ? (
+        <span className="text-lg font-semibold text-gray-500 animate-pulse">--</span>
+      ) : pct != null ? (
+        <span className={`text-lg font-semibold ${color}`}>
+          {pct % 1 === 0 ? Math.round(pct) : pct.toFixed(1)}%
+        </span>
+      ) : (
+        <span className="text-lg font-semibold text-gray-600">--</span>
+      )}
+    </div>
   );
 }
