@@ -9,5 +9,5 @@ jobs:
     steps:
       - name: Trigger crypto price ingestion
         run: |
-          curl -f -X GET https://aimaia-frontend.vercel.app/api/cron/crypto-prices \
+          curl -f -X GET https://aimaia.vercel.app/api/cron/crypto-prices \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
