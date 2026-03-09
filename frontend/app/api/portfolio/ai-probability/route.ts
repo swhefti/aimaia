@@ -2,14 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 
 /**
- * POST /api/portfolio/ai-probability
- * Returns two AI-generated goal probability estimates (Opus + Sonnet).
- * The AI analyzes the portfolio in the context of the user's goal and timeframe,
- * using only raw portfolio data — no platform scores are included.
+ * POST /api/portfolio/ai-probability?model=opus|sonnet
+ * Returns one AI-generated goal probability estimate.
+ * Called separately for each model so each gets its own Vercel timeout window.
  */
 
-const OPUS_MODEL = 'claude-opus-4-6';
-const SONNET_MODEL = 'claude-sonnet-4-6';
+const MODELS: Record<string, string> = {
+  opus: 'claude-opus-4-6',
+  sonnet: 'claude-sonnet-4-6',
+};
 
 function buildPrompt(data: {
   goalReturnPct: number;
@@ -71,6 +72,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not set' }, { status: 500 });
   }
 
+  const modelKey = req.nextUrl.searchParams.get('model') ?? 'sonnet';
+  const modelId = MODELS[modelKey];
+  if (!modelId) {
+    return NextResponse.json({ error: `Unknown model: ${modelKey}` }, { status: 400 });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await req.json() as Record<string, unknown>;
@@ -100,43 +107,33 @@ export async function POST(req: NextRequest) {
   const { system, user } = buildPrompt(data);
   const anthropic = new Anthropic({ apiKey });
 
-  // Call both models in parallel
-  const [opusResult, sonnetResult] = await Promise.allSettled([
-    callModel(anthropic, OPUS_MODEL, system, user),
-    callModel(anthropic, SONNET_MODEL, system, user),
-  ]);
+  try {
+    const response = await anthropic.messages.create({
+      model: modelId,
+      max_tokens: 300,
+      system,
+      messages: [{ role: 'user', content: user }],
+    });
 
-  return NextResponse.json({
-    opus: opusResult.status === 'fulfilled' ? opusResult.value : { probability: null, reasoning: 'Model call failed', error: true },
-    sonnet: sonnetResult.status === 'fulfilled' ? sonnetResult.value : { probability: null, reasoning: 'Model call failed', error: true },
-  });
-}
+    const rawText = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
 
-async function callModel(
-  anthropic: Anthropic,
-  model: string,
-  system: string,
-  user: string
-): Promise<{ probability: number; reasoning: string }> {
-  const response = await anthropic.messages.create({
-    model,
-    max_tokens: 300,
-    system,
-    messages: [{ role: 'user', content: user }],
-  });
+    const cleaned = rawText.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned) as { probability: number; reasoning: string };
 
-  const rawText = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
-
-  const cleaned = rawText.replace(/```json|```/g, '').trim();
-  const parsed = JSON.parse(cleaned) as { probability: number; reasoning: string };
-
-  return {
-    probability: Math.max(0, Math.min(100, parsed.probability)),
-    reasoning: parsed.reasoning,
-  };
+    return NextResponse.json({
+      probability: Math.max(0, Math.min(100, parsed.probability)),
+      reasoning: parsed.reasoning,
+    });
+  } catch (err) {
+    console.error(`[AI-Probability] ${modelKey} failed:`, err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { probability: null, reasoning: 'Model call failed', error: true },
+      { status: 500 },
+    );
+  }
 }
 
 export const maxDuration = 60;

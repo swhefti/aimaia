@@ -106,55 +106,59 @@ export default function DashboardPage() {
   ) => {
     if (isGuest) return;
     setAiLoading(true);
-    try {
-      const investmentCapital = prof.investmentCapital;
-      const costBasis = pos.reduce((sum, p) => sum + p.quantity * p.avgPurchasePrice, 0);
-      const cumulativeReturnPct = investmentCapital > 0
-        ? (tValue - investmentCapital) / investmentCapital
-        : 0;
 
-      const positionsPayload = pos.map((p) => {
-        const currentPrice = prices[p.ticker] ?? p.avgPurchasePrice;
-        const currentValue = p.quantity * currentPrice;
-        return {
-          ticker: p.ticker,
-          quantity: p.quantity,
-          avgPurchasePrice: p.avgPurchasePrice,
-          currentPrice,
-          currentValue,
-          allocationPct: tValue > 0 ? (currentValue / tValue) * 100 : 0,
-          unrealizedPnlPct: p.avgPurchasePrice > 0 ? (currentPrice - p.avgPurchasePrice) / p.avgPurchasePrice : 0,
-        };
-      });
+    const investmentCapital = prof.investmentCapital;
+    const cumulativeReturnPct = investmentCapital > 0
+      ? (tValue - investmentCapital) / investmentCapital
+      : 0;
 
-      const resp = await fetch('/api/portfolio/ai-probability', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          goalReturnPct: prof.goalReturnPct,
-          timeHorizonMonths: prof.timeHorizonMonths,
-          riskProfile: prof.riskProfile,
-          investmentCapital,
-          totalValue: tValue,
-          cashValue: cValue,
-          cumulativeReturnPct,
-          positions: positionsPayload,
-        }),
-      });
+    const positionsPayload = pos.map((p) => {
+      const currentPrice = prices[p.ticker] ?? p.avgPurchasePrice;
+      const currentValue = p.quantity * currentPrice;
+      return {
+        ticker: p.ticker,
+        quantity: p.quantity,
+        avgPurchasePrice: p.avgPurchasePrice,
+        currentPrice,
+        currentValue,
+        allocationPct: tValue > 0 ? (currentValue / tValue) * 100 : 0,
+        unrealizedPnlPct: p.avgPurchasePrice > 0 ? (currentPrice - p.avgPurchasePrice) / p.avgPurchasePrice : 0,
+      };
+    });
 
-      if (resp.ok) {
-        const result = await resp.json() as {
-          opus: { probability: number | null };
-          sonnet: { probability: number | null };
-        };
-        setAiOpusPct(result.opus.probability);
-        setAiSonnetPct(result.sonnet.probability);
-      }
-    } catch {
-      // Non-blocking — AI indicators just won't show
-    } finally {
-      setAiLoading(false);
-    }
+    const payload = JSON.stringify({
+      goalReturnPct: prof.goalReturnPct,
+      timeHorizonMonths: prof.timeHorizonMonths,
+      riskProfile: prof.riskProfile,
+      investmentCapital,
+      totalValue: tValue,
+      cashValue: cValue,
+      cumulativeReturnPct,
+      positions: positionsPayload,
+    });
+
+    // Call each model separately so each gets its own Vercel timeout window
+    const fetchModel = async (model: string): Promise<number | null> => {
+      try {
+        const resp = await fetch(`/api/portfolio/ai-probability?model=${model}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        });
+        if (resp.ok) {
+          const result = await resp.json() as { probability: number | null };
+          return result.probability;
+        }
+      } catch { /* non-blocking */ }
+      return null;
+    };
+
+    // Fire both in parallel, update each as it arrives
+    const opusPromise = fetchModel('opus').then((p) => { setAiOpusPct(p); });
+    const sonnetPromise = fetchModel('sonnet').then((p) => { setAiSonnetPct(p); });
+
+    await Promise.allSettled([opusPromise, sonnetPromise]);
+    setAiLoading(false);
   }, [isGuest]);
 
   // --- Guest/Simulation mode loader ---

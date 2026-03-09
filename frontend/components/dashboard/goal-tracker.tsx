@@ -47,6 +47,8 @@ export function GoalTracker({
 }
 
 function AiIndicator({ label, pct, loading }: { label: string; pct?: number | null | undefined; loading?: boolean | undefined }) {
+  // Show pulsing only if loading AND this specific indicator hasn't arrived yet
+  const isPending = loading && pct == null;
   const color = pct == null ? 'text-gray-500'
     : pct >= 60 ? 'text-emerald-400'
     : pct >= 40 ? 'text-amber-400'
@@ -55,7 +57,7 @@ function AiIndicator({ label, pct, loading }: { label: string; pct?: number | nu
   return (
     <div className="flex items-baseline gap-1.5">
       <span className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">{label}</span>
-      {loading ? (
+      {isPending ? (
         <span className="text-lg font-semibold text-gray-500 animate-pulse">--</span>
       ) : pct != null ? (
         <span className={`text-lg font-semibold ${color}`}>
