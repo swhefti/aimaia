@@ -41,6 +41,7 @@ export async function buildContextPackage(
     volatilityTolerance: profileData.volatility_tolerance as UserProfile['volatilityTolerance'],
     assetTypes: profileData.asset_types as UserProfile['assetTypes'],
     maxPositions: Number(profileData.max_positions),
+    rebalancingPreference: (profileData.rebalancing_preference as UserProfile['rebalancingPreference']) ?? 'daily',
   };
 
   // 2. Load portfolio positions with current prices
