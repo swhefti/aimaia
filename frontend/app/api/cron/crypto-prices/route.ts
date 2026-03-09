@@ -88,8 +88,8 @@ export async function GET(req: NextRequest) {
   let failed = 0;
   const errors: string[] = [];
 
-  // Process in batches of 6 with 10s delay
-  const BATCH_SIZE = 6;
+  // Process in batches of 8 with 65s delay (Twelve Data free tier: 8 credits/min)
+  const BATCH_SIZE = 8;
   for (let i = 0; i < tickers.length; i += BATCH_SIZE) {
     const batch = tickers.slice(i, i + BATCH_SIZE);
     const results = await Promise.allSettled(
@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
     }
 
     if (i + BATCH_SIZE < tickers.length) {
-      await new Promise((r) => setTimeout(r, 10_000));
+      await new Promise((r) => setTimeout(r, 65_000));
     }
   }
 
@@ -119,4 +119,4 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ startedAt, completedAt, success, failed, errors: errors.slice(0, 20) });
 }
 
-export const maxDuration = 120;
+export const maxDuration = 300;
