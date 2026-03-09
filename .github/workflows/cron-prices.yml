@@ -7,7 +7,16 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger price ingestion
+      - name: Fetch tickers list
+        id: tickers
         run: |
-          curl -f -X GET https://aimaia.vercel.app/api/cron/prices \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          TICKERS=$(curl -s -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://aimaia.vercel.app/api/cron/prices" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['tickers']))")
+          echo "list=$TICKERS" >> $GITHUB_OUTPUT
+      - name: Ingest each ticker
+        run: |
+          for ticker in ${{ steps.tickers.outputs.list }}; do
+            curl -s -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "https://aimaia.vercel.app/api/cron/prices?ticker=$ticker"
+            sleep 7
+          done

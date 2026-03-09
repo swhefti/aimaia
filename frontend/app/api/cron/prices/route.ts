@@ -4,8 +4,9 @@ import { STOCKS, ETFS, CRYPTO } from '@shared/lib/constants';
 
 /**
  * GET /api/cron/prices
- * Vercel Cron: runs daily at 21:00 UTC (after US market close).
- * Fetches OHLCV for all stocks, ETFs, and crypto from Twelve Data.
+ * Called by GitHub Actions. Two modes:
+ *   - No ?ticker param → returns list of tickers to process
+ *   - ?ticker=AAPL     → fetches and saves price for that single ticker
  */
 
 const CRYPTO_TWELVE_DATA_MAP: Record<string, string> = {
@@ -85,62 +86,28 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const tickerParam = req.nextUrl.searchParams.get('ticker');
+
+  // Mode 1: Return ticker list for orchestration
+  if (!tickerParam) {
+    const weekend = isWeekend();
+    const tickers = weekend ? [...CRYPTO] : [...STOCKS, ...ETFS, ...CRYPTO];
+    return NextResponse.json({ tickers, count: tickers.length, weekend });
+  }
+
+  // Mode 2: Fetch a single ticker
   const apiKey = process.env['TWELVE_DATA_API_KEY'];
   if (!apiKey) {
     return NextResponse.json({ error: 'TWELVE_DATA_API_KEY not set' }, { status: 500 });
   }
 
-  const startedAt = new Date().toISOString();
-  console.log(`[Cron/Prices] Starting at ${startedAt}`);
-
   const supabase = getServiceSupabase();
+  const result = await fetchPrice(supabase, tickerParam, apiKey);
+  const ok = result.startsWith('ok');
 
-  // On weekends, skip stocks/ETFs (markets closed)
-  const weekend = isWeekend();
-  const tickers = weekend
-    ? [...CRYPTO]
-    : [...STOCKS, ...ETFS, ...CRYPTO];
+  console.log(`[Cron/Prices] ${tickerParam}: ${result}`);
 
-  console.log(`[Cron/Prices] Fetching ${tickers.length} tickers (weekend=${weekend})`);
-
-  let success = 0;
-  let failed = 0;
-  const errors: string[] = [];
-
-  // Process in batches of 8 with 65s delay (Twelve Data free tier: 8 credits/min)
-  const BATCH_SIZE = 8;
-  for (let i = 0; i < tickers.length; i += BATCH_SIZE) {
-    const batch = tickers.slice(i, i + BATCH_SIZE);
-    const results = await Promise.allSettled(
-      batch.map((ticker) => fetchPrice(supabase, ticker, apiKey)),
-    );
-
-    for (let j = 0; j < results.length; j++) {
-      const result = results[j]!;
-      const ticker = batch[j]!;
-      if (result.status === 'fulfilled') {
-        if (result.value.startsWith('ok')) {
-          success++;
-        } else {
-          failed++;
-          errors.push(`${ticker}: ${result.value}`);
-        }
-      } else {
-        failed++;
-        errors.push(`${ticker}: ${result.reason}`);
-      }
-    }
-
-    if (i + BATCH_SIZE < tickers.length) {
-      await new Promise((r) => setTimeout(r, 65_000));
-    }
-  }
-
-  const completedAt = new Date().toISOString();
-  console.log(`[Cron/Prices] Done at ${completedAt}: ${success} success, ${failed} failed`);
-  if (errors.length > 0) console.error(`[Cron/Prices] Errors:`, errors.slice(0, 10));
-
-  return NextResponse.json({ startedAt, completedAt, success, failed, errors: errors.slice(0, 20) });
+  return NextResponse.json({ ticker: tickerParam, result, ok });
 }
 
-export const maxDuration = 300;
+export const maxDuration = 60;

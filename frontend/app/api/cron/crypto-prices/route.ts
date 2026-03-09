@@ -4,8 +4,9 @@ import { CRYPTO } from '@shared/lib/constants';
 
 /**
  * GET /api/cron/crypto-prices
- * Vercel Cron: runs every 4 hours (0 *​/4 * * *).
- * Fetches latest crypto prices from Twelve Data.
+ * Called by GitHub Actions. Two modes:
+ *   - No ?ticker param → returns list of crypto tickers to process
+ *   - ?ticker=BTC      → fetches and saves price for that single ticker
  */
 
 const CRYPTO_TWELVE_DATA_MAP: Record<string, string> = {
@@ -74,49 +75,27 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const tickerParam = req.nextUrl.searchParams.get('ticker');
+
+  // Mode 1: Return ticker list for orchestration
+  if (!tickerParam) {
+    const tickers = [...CRYPTO];
+    return NextResponse.json({ tickers, count: tickers.length });
+  }
+
+  // Mode 2: Fetch a single ticker
   const apiKey = process.env['TWELVE_DATA_API_KEY'];
   if (!apiKey) {
     return NextResponse.json({ error: 'TWELVE_DATA_API_KEY not set' }, { status: 500 });
   }
 
-  const startedAt = new Date().toISOString();
-  console.log(`[Cron/CryptoPrices] Starting at ${startedAt}`);
-
   const supabase = getServiceSupabase();
-  const tickers = [...CRYPTO];
-  let success = 0;
-  let failed = 0;
-  const errors: string[] = [];
+  const result = await fetchCryptoPrice(supabase, tickerParam, apiKey);
+  const ok = result.startsWith('ok');
 
-  // Process in batches of 8 with 65s delay (Twelve Data free tier: 8 credits/min)
-  const BATCH_SIZE = 8;
-  for (let i = 0; i < tickers.length; i += BATCH_SIZE) {
-    const batch = tickers.slice(i, i + BATCH_SIZE);
-    const results = await Promise.allSettled(
-      batch.map((ticker) => fetchCryptoPrice(supabase, ticker, apiKey)),
-    );
+  console.log(`[Cron/CryptoPrices] ${tickerParam}: ${result}`);
 
-    for (let j = 0; j < results.length; j++) {
-      const result = results[j]!;
-      const ticker = batch[j]!;
-      if (result.status === 'fulfilled') {
-        if (result.value.startsWith('ok')) success++;
-        else { failed++; errors.push(`${ticker}: ${result.value}`); }
-      } else {
-        failed++;
-        errors.push(`${ticker}: ${result.reason}`);
-      }
-    }
-
-    if (i + BATCH_SIZE < tickers.length) {
-      await new Promise((r) => setTimeout(r, 65_000));
-    }
-  }
-
-  const completedAt = new Date().toISOString();
-  console.log(`[Cron/CryptoPrices] Done: ${success} success, ${failed} failed`);
-
-  return NextResponse.json({ startedAt, completedAt, success, failed, errors: errors.slice(0, 20) });
+  return NextResponse.json({ ticker: tickerParam, result, ok });
 }
 
-export const maxDuration = 300;
+export const maxDuration = 60;
