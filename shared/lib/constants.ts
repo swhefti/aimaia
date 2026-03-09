@@ -111,7 +111,7 @@ export const SENTIMENT_DECAY_FACTOR = 0.9;
 export const MAX_POSITIONS_DEFAULT = 10;
 
 /** Anthropic model used for the LLM Synthesis Agent. */
-export const SYNTHESIS_MODEL = 'claude-opus-4-6';
+export const SYNTHESIS_MODEL = 'claude-sonnet-4-6';
 
 /** Maximum allocation for a single position (Rules Engine hard limit). */
 export const MAX_POSITION_PCT = 0.30;
