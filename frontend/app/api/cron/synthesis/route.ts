@@ -736,8 +736,31 @@ async function runSynthesisForPortfolio(
     const userPrompt = buildUserPrompt(context);
     const startTime = Date.now();
 
+    // Delete any existing runs for today (allows re-runs)
+    const { data: existingRuns } = await supabase
+      .from('synthesis_runs')
+      .select('id')
+      .eq('portfolio_id', portfolioId)
+      .eq('run_date', dateStr);
+
+    if (existingRuns && existingRuns.length > 0) {
+      const existingRunIds = existingRuns.map((r) => r.id as string);
+      // Delete old recommendation items and runs for today
+      const { data: oldRecRuns } = await supabase
+        .from('recommendation_runs')
+        .select('id')
+        .in('synthesis_run_id', existingRunIds);
+      if (oldRecRuns && oldRecRuns.length > 0) {
+        const oldRecRunIds = oldRecRuns.map((r) => r.id as string);
+        await supabase.from('recommendation_items').delete().in('run_id', oldRecRunIds);
+        await supabase.from('recommendation_runs').delete().in('id', oldRecRunIds);
+      }
+      await supabase.from('synthesis_raw_outputs').delete().in('synthesis_run_id', existingRunIds);
+      await supabase.from('synthesis_runs').delete().in('id', existingRunIds);
+    }
+
     // Create synthesis_runs record
-    const { data: runRecord } = await supabase
+    const { data: runRecord, error: runInsertError } = await supabase
       .from('synthesis_runs')
       .insert({
         user_id: userId,
@@ -753,7 +776,11 @@ async function runSynthesisForPortfolio(
       .select('id')
       .single();
 
-    runId = (runRecord?.id as string) ?? 'unknown';
+    if (runInsertError || !runRecord) {
+      throw new Error(`Failed to create synthesis_runs: ${runInsertError?.message ?? 'no data returned'}`);
+    }
+
+    runId = runRecord.id as string;
 
     const response = await anthropic.messages.create({
       model: SYNTHESIS_MODEL,
@@ -872,7 +899,10 @@ async function runSynthesisForPortfolio(
         })
         .select('id')
         .single();
-      runId = (fallbackRun?.id as string) ?? 'unknown';
+      if (!fallbackRun) {
+        return `error: failed to create fallback synthesis_runs record`;
+      }
+      runId = fallbackRun.id as string;
     } else {
       await supabase.from('synthesis_runs').update({ fallback_used: true }).eq('id', runId);
     }
