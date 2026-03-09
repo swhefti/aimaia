@@ -28,6 +28,8 @@ export default function SettingsPage() {
   const [includeFees, setIncludeFees] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Load fees preference from localStorage
   useEffect(() => {
@@ -82,6 +84,26 @@ export default function SettingsPage() {
     } catch (err) {
       console.error('Reset error:', err);
       setResetting(false);
+    }
+  }
+
+  async function handleDeleteAccount() {
+    if (!user || isGuest) return;
+    setDeleting(true);
+
+    try {
+      const resp = await fetch('/api/account/delete', { method: 'POST' });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || 'Delete failed');
+      }
+
+      await supabase.auth.signOut();
+      router.push('/login');
+    } catch (err) {
+      console.error('Delete account error:', err);
+      setDeleting(false);
+      setShowDeleteConfirm(false);
     }
   }
 
@@ -236,6 +258,60 @@ export default function SettingsPage() {
             )}
           </div>
         </Card>
+
+        {/* Delete Account */}
+        {!isGuest && (
+          <Card>
+            <div className="space-y-3">
+              <div>
+                <h3 className="text-sm font-medium text-white">Delete Account</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Permanently delete your account and all associated data. This action cannot be undone.
+                </p>
+              </div>
+              {!showDeleteConfirm ? (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => setShowDeleteConfirm(true)}
+                >
+                  Delete Account
+                </Button>
+              ) : (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm text-red-300 font-medium">This is permanent</p>
+                      <p className="text-xs text-red-400/80 mt-1">
+                        Your account, portfolio, positions, and all associated data will be permanently deleted.
+                        You will not be able to recover any of this data.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={handleDeleteAccount}
+                      disabled={deleting}
+                    >
+                      {deleting ? 'Deleting...' : 'Yes, delete my account'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowDeleteConfirm(false)}
+                      disabled={deleting}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
       </div>
     </main>
   );
