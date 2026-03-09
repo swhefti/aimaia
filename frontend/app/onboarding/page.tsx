@@ -382,6 +382,7 @@ export default function OnboardingPage() {
         volatilityTolerance: volatility,
         assetTypes,
         maxPositions,
+        rebalancingPreference: 'daily' as const,
       };
 
       if (isGuest) {
@@ -529,6 +530,13 @@ export default function OnboardingPage() {
           riskProfile,
         });
         await upsertPortfolioValuation(supabase, portfolioIdRef.current!, capital, cashValue, 0, 0, initProb);
+      }
+
+      // Mark onboarding as completed
+      if (!isGuest) {
+        await supabase.from('user_profiles')
+          .update({ onboarding_completed_at: new Date().toISOString() })
+          .eq('user_id', user.id);
       }
 
       router.push('/dashboard');

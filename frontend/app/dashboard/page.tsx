@@ -266,7 +266,7 @@ export default function DashboardPage() {
       setProfile(userProfile);
       setPortfolio(userPortfolio);
 
-      if (!userProfile) {
+      if (!userProfile || !userProfile.investmentCapital) {
         router.push('/onboarding');
         return;
       }

@@ -6,6 +6,8 @@ export type VolatilityTolerance = 'moderate' | 'balanced' | 'tolerant';
 
 export type GoalStatus = 'on_track' | 'monitor' | 'at_risk' | 'off_track';
 
+export type RebalancingPreference = 'daily' | 'weekly' | 'monthly';
+
 export interface UserProfile {
   userId: string;
   investmentCapital: number;       // USD
@@ -16,6 +18,7 @@ export interface UserProfile {
   volatilityTolerance: VolatilityTolerance;
   assetTypes: AssetType[];         // which asset classes the user allows
   maxPositions: number;
+  rebalancingPreference: RebalancingPreference;
 }
 
 export interface Portfolio {

@@ -85,6 +85,7 @@ export function SettingsPanel({ profile, onProfileUpdated }: SettingsPanelProps)
         volatilityTolerance: volatility,
         assetTypes: profile.assetTypes,
         maxPositions: profile.maxPositions,
+        rebalancingPreference: profile.rebalancingPreference ?? 'daily',
       };
       if (!isGuest) {
         await upsertUserProfile(supabase, user.id, updated);

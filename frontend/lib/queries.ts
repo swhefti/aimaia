@@ -54,7 +54,7 @@ export async function upsertUserProfile(
       volatility_tolerance: profile.volatilityTolerance,
       asset_types: profile.assetTypes,
       max_positions: profile.maxPositions,
-      rebalancing_preference: 'daily',
+      rebalancing_preference: profile.rebalancingPreference ?? 'daily',
     },
     { onConflict: 'user_id' }
   );
@@ -1010,6 +1010,7 @@ function mapUserProfile(row: Record<string, unknown>): UserProfile {
     volatilityTolerance: row.volatility_tolerance as UserProfile['volatilityTolerance'],
     assetTypes: row.asset_types as UserProfile['assetTypes'],
     maxPositions: row.max_positions as number,
+    rebalancingPreference: (row.rebalancing_preference as UserProfile['rebalancingPreference']) ?? 'daily',
   };
 }
 
