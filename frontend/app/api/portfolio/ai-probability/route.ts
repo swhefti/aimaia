@@ -9,7 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
  */
 
 const OPUS_MODEL = 'claude-opus-4-6';
-const SONNET_MODEL = 'claude-sonnet-4-5-20250514';
+const SONNET_MODEL = 'claude-sonnet-4-6';
 
 function buildPrompt(data: {
   goalReturnPct: number;
