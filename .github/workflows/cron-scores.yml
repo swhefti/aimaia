@@ -9,5 +9,5 @@ jobs:
     steps:
       - name: Trigger scoring pipeline
         run: |
-          curl -f -X GET https://aimaia-frontend.vercel.app/api/cron/scores \
+          curl -f -X GET https://aimaia.vercel.app/api/cron/scores \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
