@@ -75,6 +75,7 @@ function LoginPageInner() {
       volatilityTolerance: 'balanced',
       assetTypes: ['stock', 'etf', 'crypto'],
       maxPositions: 10,
+      rebalancingPreference: 'daily' as const,
     }
     sessionStorage.setItem('guest_profile', JSON.stringify(simProfile))
 
