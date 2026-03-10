@@ -8,10 +8,8 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { calculateEMA } from '@/lib/indicators';
 
 export interface PriceRow {
   date: string;
@@ -55,15 +53,12 @@ export function PriceChart({ data, dateRange, loading }: PriceChartProps) {
     );
   }
 
-  const ema20 = useMemo(() => calculateEMA(data.map((d) => d.close), 20), [data]);
-
   const chartData = useMemo(() =>
-    data.map((d, i) => ({
+    data.map((d) => ({
       date: d.date,
       close: d.close,
-      ema20: Number.isNaN(ema20[i]!) ? undefined : ema20[i],
     })),
-    [data, ema20],
+    [data],
   );
 
   // Compute Y domain with padding
@@ -108,14 +103,7 @@ export function PriceChart({ data, dateRange, loading }: PriceChartProps) {
               fontSize: '12px',
             }}
             labelFormatter={formatDateLabel}
-            formatter={(value: number, name: string) => [
-              formatPrice(value),
-              name === 'close' ? 'Price' : 'EMA 20',
-            ]}
-          />
-          <Legend
-            wrapperStyle={{ fontSize: '11px', paddingTop: '4px' }}
-            formatter={(value: string) => (value === 'close' ? 'Price' : 'EMA 20')}
+            formatter={(value: number) => [formatPrice(value), 'Price']}
           />
           <Line
             type="monotone"
@@ -124,16 +112,6 @@ export function PriceChart({ data, dateRange, loading }: PriceChartProps) {
             strokeWidth={1.5}
             dot={false}
             name="close"
-          />
-          <Line
-            type="monotone"
-            dataKey="ema20"
-            stroke="#3B82F6"
-            strokeWidth={1.5}
-            dot={false}
-            strokeDasharray="4 2"
-            name="ema20"
-            connectNulls={false}
           />
         </ComposedChart>
       </ResponsiveContainer>

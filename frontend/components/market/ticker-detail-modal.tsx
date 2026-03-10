@@ -9,6 +9,7 @@ import { LabeledBlock } from '@/components/ui/agent-badge';
 import { Button } from '@/components/ui/button';
 import { PriceChart } from '@/components/ui/price-chart';
 import type { PriceRow } from '@/components/ui/price-chart';
+import { TechnicalBreakdown } from '@/components/market/technical-breakdown';
 import { formatCurrency, formatPct } from '@/lib/formatters';
 import {
   getAgentScoresForTicker,
@@ -95,6 +96,9 @@ export function TickerDetailModal({
   const [showBuyModal, setShowBuyModal] = useState(false);
   const [buyAmount, setBuyAmount] = useState('');
 
+  // Technical breakdown
+  const [showTechBreakdown, setShowTechBreakdown] = useState(false);
+
   // Dev refresh
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -110,6 +114,7 @@ export function TickerDetailModal({
       setPriceHistoryRange(null);
       setShowBuyModal(false);
       setBuyAmount('');
+      setShowTechBreakdown(false);
       return;
     }
     setLoadingData(true);
@@ -327,6 +332,39 @@ export function TickerDetailModal({
                 </div>
               </div>
             )}
+
+            {/* Technical Score Breakdown — collapsible */}
+            {scores.find((s) => s.agentType === 'technical') && (() => {
+              const techScore = scores.find((s) => s.agentType === 'technical')!;
+              return (
+                <div>
+                  <button
+                    onClick={() => setShowTechBreakdown((v) => !v)}
+                    className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
+                  >
+                    <span className="transition-transform duration-200 inline-block" style={{ transform: showTechBreakdown ? 'rotate(90deg)' : 'none' }}>
+                      &#9656;
+                    </span>
+                    Understand Technical Score
+                  </button>
+                  <div
+                    className="overflow-hidden transition-all duration-300 ease-in-out"
+                    style={{
+                      maxHeight: showTechBreakdown ? '800px' : '0px',
+                      opacity: showTechBreakdown ? 1 : 0,
+                    }}
+                  >
+                    <div className="pt-3">
+                      <TechnicalBreakdown
+                        componentScores={techScore.componentScores}
+                        explanation={techScore.explanation}
+                        priceHistory={priceHistory}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Sentiment Explanation */}
             {sentimentScore?.explanation && (

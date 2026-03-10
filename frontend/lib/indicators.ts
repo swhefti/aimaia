@@ -25,3 +25,40 @@ export function calculateEMA(values: number[], period: number): number[] {
 
   return result;
 }
+
+export interface BollingerBands {
+  upper: number[];
+  middle: number[];
+  lower: number[];
+}
+
+/**
+ * Compute Bollinger Bands (period-day EMA ± multiplier × rolling std deviation).
+ * Returns arrays of the same length as input. Values before enough data are NaN.
+ */
+export function calculateBollingerBands(
+  values: number[],
+  period: number = 20,
+  multiplier: number = 2,
+): BollingerBands {
+  const middle = calculateEMA(values, period);
+  const upper: number[] = new Array(values.length);
+  const lower: number[] = new Array(values.length);
+
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1 || Number.isNaN(middle[i]!)) {
+      upper[i] = NaN;
+      lower[i] = NaN;
+      continue;
+    }
+    // Rolling std deviation over last `period` values
+    const window = values.slice(Math.max(0, i - period + 1), i + 1);
+    const mean = window.reduce((a, b) => a + b, 0) / window.length;
+    const variance = window.reduce((a, b) => a + (b - mean) ** 2, 0) / window.length;
+    const std = Math.sqrt(variance);
+    upper[i] = middle[i]! + multiplier * std;
+    lower[i] = middle[i]! - multiplier * std;
+  }
+
+  return { upper, middle, lower };
+}
