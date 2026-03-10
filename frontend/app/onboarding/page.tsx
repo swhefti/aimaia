@@ -224,20 +224,18 @@ function generateRecommendations(
       price: prices[t]!,
       type: ASSET_TYPE_MAP[t] ?? 'stock',
     }))
-    .filter((c) => c.score > 0) // Only positive-scoring assets
     .sort((a, b) => b.score - a.score);
 
+  // Fallback defaults for when we have no or insufficient scored candidates
+  const FALLBACK_TICKERS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'VOO', 'VTI', 'GLD', 'AMZN', 'NVDA', 'META', 'JNJ'];
+  const fallbackPrices: Record<string, number> = {
+    SPY: 520, QQQ: 450, AAPL: 185, MSFT: 420, GOOGL: 155, VOO: 480,
+    VTI: 260, GLD: 195, AMZN: 185, NVDA: 880, META: 510, JNJ: 155,
+  };
+
   if (candidates.length === 0) {
-    // Fallback: recommend blue-chip defaults even without scores/prices
-    const defaults = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'VOO', 'VTI', 'GLD', 'AMZN', 'NVDA', 'META', 'JNJ'];
-    const fallback = defaults.slice(0, maxPositions);
-
-    // Use known approximate prices as last resort
-    const fallbackPrices: Record<string, number> = {
-      SPY: 520, QQQ: 450, AAPL: 185, MSFT: 420, GOOGL: 155, VOO: 480,
-      VTI: 260, GLD: 195, AMZN: 185, NVDA: 880, META: 510, JNJ: 155,
-    };
-
+    // No scored candidates at all — use fallback defaults
+    const fallback = FALLBACK_TICKERS.slice(0, maxPositions);
     const equalAlloc = Math.round((100 * (1 - CASH_FLOOR_PCT)) / fallback.length * 10) / 10;
     return fallback.map((ticker) => ({
       ticker,
@@ -250,19 +248,39 @@ function generateRecommendations(
     }));
   }
 
-  // Pick top N
-  const selected = candidates.slice(0, maxPositions);
+  // Pick top N — take the best-scoring candidates regardless of sign
+  let selected = candidates.slice(0, maxPositions);
 
-  // Allocate proportionally based on score
-  const totalScore = selected.reduce((sum, c) => sum + c.score, 0);
+  // If we have fewer candidates than maxPositions, supplement with fallback defaults
+  if (selected.length < maxPositions) {
+    const usedTickers = new Set(selected.map((c) => c.ticker));
+    for (const ticker of FALLBACK_TICKERS) {
+      if (selected.length >= maxPositions) break;
+      if (usedTickers.has(ticker)) continue;
+      selected.push({
+        ticker,
+        score: 0,
+        price: prices[ticker] ?? fallbackPrices[ticker] ?? 100,
+        type: ASSET_TYPE_MAP[ticker] ?? 'stock',
+      });
+      usedTickers.add(ticker);
+    }
+  }
+
+  // Allocate proportionally — shift scores so the minimum is positive for sensible ratios
+  const minScore = Math.min(...selected.map((c) => c.score));
+  const shift = minScore < 0.01 ? Math.abs(minScore) + 0.01 : 0;
+  const shiftedScores = selected.map((c) => c.score + shift);
+  const totalShifted = shiftedScores.reduce((sum, s) => sum + s, 0);
   const investablePct = 100 * (1 - CASH_FLOOR_PCT); // 95%
   const maxSinglePct = MAX_POSITION_PCT * 100; // 30%
 
-  const recs: PortfolioRecommendation[] = selected.map((c) => {
-    const rawAlloc = (c.score / totalScore) * investablePct;
+  const recs: PortfolioRecommendation[] = selected.map((c, i) => {
+    const rawAlloc = (shiftedScores[i]! / totalShifted) * investablePct;
     const allocationPct = Math.round(Math.min(rawAlloc, maxSinglePct) * 10) / 10;
 
-    const signal = c.score >= 0.6 ? 'Strong Buy' : c.score >= 0.2 ? 'Buy' : 'Hold';
+    const signal = c.score >= 0.6 ? 'Strong Buy' : c.score >= 0.2 ? 'Buy'
+      : c.score >= -0.19 ? 'Hold' : c.score >= -0.59 ? 'Sell' : 'Strong Sell';
     const typeLabel = c.type === 'etf' ? 'ETF' : c.type === 'crypto' ? 'cryptocurrency' : 'stock';
 
     let reasoning = '';
@@ -270,8 +288,10 @@ function generateRecommendations(
       reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} shows strong bullish signals across technical and fundamental analysis (score: ${c.score.toFixed(2)}). `;
     } else if (c.score >= 0.2) {
       reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} has positive momentum with a composite score of ${c.score.toFixed(2)}. `;
+    } else if (c.score >= -0.19) {
+      reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is a neutral pick among the best available options (score: ${c.score.toFixed(2)}). `;
     } else {
-      reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is a neutral-to-positive pick (score: ${c.score.toFixed(2)}). `;
+      reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is the best available candidate in the current market (score: ${c.score.toFixed(2)}). `;
     }
 
     if (riskProfile === 'conservative') {
