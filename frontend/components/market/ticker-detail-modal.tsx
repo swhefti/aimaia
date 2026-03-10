@@ -323,68 +323,64 @@ export function TickerDetailModal({
                       : s.agentType === 'fundamental' ? 'Fundamental Score'
                       : s.agentType === 'market_regime' ? 'Regime Score'
                       : `${s.agentType} Score`;
+                    const hasBreakdown =
+                      (s.agentType === 'technical') ||
+                      (s.agentType === 'fundamental' && !isCrypto);
+                    const isOpen = s.agentType === 'technical' ? showTechBreakdown : showFundBreakdown;
+                    const toggle = s.agentType === 'technical' ? setShowTechBreakdown : setShowFundBreakdown;
                     return (
                       <div key={s.agentType}>
-                        <ScoreBar
-                          score={s.score}
-                          label={label}
-                          confidence={s.confidence}
-                        />
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex-1 min-w-0">
+                            <ScoreBar
+                              score={s.score}
+                              label={label}
+                              confidence={s.confidence}
+                            />
+                          </div>
+                          {hasBreakdown && (
+                            <button
+                              onClick={() => toggle((v) => !v)}
+                              className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-xs transition-colors ${isOpen ? 'text-accent-blue bg-accent-blue/10' : 'text-gray-500 hover:text-gray-300'}`}
+                              title={`${isOpen ? 'Hide' : 'Show'} breakdown`}
+                            >
+                              &#9432;
+                            </button>
+                          )}
+                        </div>
                         {/* Technical Score Breakdown — collapsible */}
                         {s.agentType === 'technical' && (
-                          <div className="mt-1 ml-[calc(7rem+12px)]">
-                            <button
-                              onClick={() => setShowTechBreakdown((v) => !v)}
-                              className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
-                            >
-                              <span className="transition-transform duration-200 inline-block" style={{ transform: showTechBreakdown ? 'rotate(90deg)' : 'none' }}>
-                                &#9656;
-                              </span>
-                              Understand Technical Score
-                            </button>
-                            <div
-                              className="overflow-hidden transition-all duration-300 ease-in-out"
-                              style={{
-                                maxHeight: showTechBreakdown ? '800px' : '0px',
-                                opacity: showTechBreakdown ? 1 : 0,
-                              }}
-                            >
-                              <div className="pt-3">
-                                <TechnicalBreakdown
-                                  componentScores={s.componentScores}
-                                  explanation={s.explanation}
-                                  priceHistory={priceHistory}
-                                />
-                              </div>
+                          <div
+                            className="overflow-hidden transition-all duration-300 ease-in-out"
+                            style={{
+                              maxHeight: showTechBreakdown ? '800px' : '0px',
+                              opacity: showTechBreakdown ? 1 : 0,
+                            }}
+                          >
+                            <div className="pt-3">
+                              <TechnicalBreakdown
+                                componentScores={s.componentScores}
+                                explanation={s.explanation}
+                                priceHistory={priceHistory}
+                              />
                             </div>
                           </div>
                         )}
                         {/* Fundamental Score Breakdown — collapsible, hidden for crypto */}
                         {s.agentType === 'fundamental' && !isCrypto && (
-                          <div className="mt-1 ml-[calc(7rem+12px)]">
-                            <button
-                              onClick={() => setShowFundBreakdown((v) => !v)}
-                              className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
-                            >
-                              <span className="transition-transform duration-200 inline-block" style={{ transform: showFundBreakdown ? 'rotate(90deg)' : 'none' }}>
-                                &#9656;
-                              </span>
-                              Understand Fundamental Score
-                            </button>
-                            <div
-                              className="overflow-hidden transition-all duration-300 ease-in-out"
-                              style={{
-                                maxHeight: showFundBreakdown ? '900px' : '0px',
-                                opacity: showFundBreakdown ? 1 : 0,
-                              }}
-                            >
-                              <div className="pt-3">
-                                <FundamentalBreakdown
-                                  componentScores={s.componentScores}
-                                  fundamentalData={fundamentals}
-                                  ticker={ticker}
-                                />
-                              </div>
+                          <div
+                            className="overflow-hidden transition-all duration-300 ease-in-out"
+                            style={{
+                              maxHeight: showFundBreakdown ? '900px' : '0px',
+                              opacity: showFundBreakdown ? 1 : 0,
+                            }}
+                          >
+                            <div className="pt-3">
+                              <FundamentalBreakdown
+                                componentScores={s.componentScores}
+                                fundamentalData={fundamentals}
+                                ticker={ticker}
+                              />
                             </div>
                           </div>
                         )}
