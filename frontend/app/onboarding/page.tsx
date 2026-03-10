@@ -419,15 +419,32 @@ export default function OnboardingPage() {
 
       // Create portfolio upfront so positions can be saved immediately on approve
       if (!isGuest) {
-        try {
-          const newPortfolioId = await createPortfolio(supabase, user.id, 'My Portfolio');
-          portfolioIdRef.current = newPortfolioId;
-        } catch {
-          // Portfolio may already exist — try to fetch it
-          const existing = await getPortfolio(supabase, user.id);
-          if (existing) {
-            portfolioIdRef.current = existing.id;
+        // First check if an active portfolio already exists
+        const existing = await getPortfolio(supabase, user.id);
+        if (existing) {
+          portfolioIdRef.current = existing.id;
+        } else {
+          try {
+            const newPortfolioId = await createPortfolio(supabase, user.id, 'My Portfolio');
+            portfolioIdRef.current = newPortfolioId;
+          } catch (createErr) {
+            console.error('Failed to create portfolio:', createErr);
+            // Retry once after short delay
+            try {
+              await new Promise((r) => setTimeout(r, 500));
+              const retryId = await createPortfolio(supabase, user.id, 'My Portfolio');
+              portfolioIdRef.current = retryId;
+            } catch (retryErr) {
+              console.error('Portfolio creation retry failed:', retryErr);
+            }
           }
+        }
+
+        if (!portfolioIdRef.current) {
+          setCalcError('Could not create portfolio. Please try again.');
+          setSaving(false);
+          setCalculating(false);
+          return;
         }
       }
 
