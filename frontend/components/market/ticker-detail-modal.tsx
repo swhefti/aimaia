@@ -358,7 +358,7 @@ export function TickerDetailModal({
                               opacity: showTechBreakdown ? 1 : 0,
                             }}
                           >
-                            <div className="mt-2 p-3 rounded-lg bg-navy-700/30 border border-navy-600/40">
+                            <div className="mt-2 p-3 rounded-lg bg-navy-600/25 border border-navy-500/30">
                               <TechnicalBreakdown
                                 componentScores={s.componentScores}
                                 explanation={s.explanation}
@@ -376,7 +376,7 @@ export function TickerDetailModal({
                               opacity: showFundBreakdown ? 1 : 0,
                             }}
                           >
-                            <div className="mt-2 p-3 rounded-lg bg-navy-700/30 border border-navy-600/40">
+                            <div className="mt-2 p-3 rounded-lg bg-navy-600/25 border border-navy-500/30">
                               <FundamentalBreakdown
                                 componentScores={s.componentScores}
                                 fundamentalData={fundamentals}
