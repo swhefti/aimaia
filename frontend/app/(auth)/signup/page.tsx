@@ -87,7 +87,7 @@ export default function SignupPage() {
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
               placeholder="Your name"
-              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400
                          focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
             />
           </div>
@@ -99,7 +99,7 @@ export default function SignupPage() {
               value={email}
               onChange={e => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400
                          focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
               autoComplete="email"
             />
@@ -113,7 +113,7 @@ export default function SignupPage() {
               onChange={e => setPassword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSignup()}
               placeholder="Min. 8 characters"
-              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400
                          focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
               autoComplete="new-password"
             />
