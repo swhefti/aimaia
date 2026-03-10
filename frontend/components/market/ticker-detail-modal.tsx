@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { PriceChart } from '@/components/ui/price-chart';
 import type { PriceRow } from '@/components/ui/price-chart';
 import { TechnicalBreakdown } from '@/components/market/technical-breakdown';
+import { FundamentalBreakdown } from '@/components/market/fundamental-breakdown';
 import { formatCurrency, formatPct } from '@/lib/formatters';
 import {
   getAgentScoresForTicker,
@@ -98,6 +99,8 @@ export function TickerDetailModal({
 
   // Technical breakdown
   const [showTechBreakdown, setShowTechBreakdown] = useState(false);
+  // Fundamental breakdown
+  const [showFundBreakdown, setShowFundBreakdown] = useState(false);
 
   // Dev refresh
   const [refreshing, setRefreshing] = useState(false);
@@ -115,6 +118,7 @@ export function TickerDetailModal({
       setShowBuyModal(false);
       setBuyAmount('');
       setShowTechBreakdown(false);
+      setShowFundBreakdown(false);
       return;
     }
     setLoadingData(true);
@@ -326,45 +330,70 @@ export function TickerDetailModal({
                           label={label}
                           confidence={s.confidence}
                         />
+                        {/* Technical Score Breakdown — collapsible */}
+                        {s.agentType === 'technical' && (
+                          <div className="mt-1 ml-[calc(7rem+12px)]">
+                            <button
+                              onClick={() => setShowTechBreakdown((v) => !v)}
+                              className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
+                            >
+                              <span className="transition-transform duration-200 inline-block" style={{ transform: showTechBreakdown ? 'rotate(90deg)' : 'none' }}>
+                                &#9656;
+                              </span>
+                              Understand Technical Score
+                            </button>
+                            <div
+                              className="overflow-hidden transition-all duration-300 ease-in-out"
+                              style={{
+                                maxHeight: showTechBreakdown ? '800px' : '0px',
+                                opacity: showTechBreakdown ? 1 : 0,
+                              }}
+                            >
+                              <div className="pt-3">
+                                <TechnicalBreakdown
+                                  componentScores={s.componentScores}
+                                  explanation={s.explanation}
+                                  priceHistory={priceHistory}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {/* Fundamental Score Breakdown — collapsible, hidden for crypto */}
+                        {s.agentType === 'fundamental' && !isCrypto && (
+                          <div className="mt-1 ml-[calc(7rem+12px)]">
+                            <button
+                              onClick={() => setShowFundBreakdown((v) => !v)}
+                              className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
+                            >
+                              <span className="transition-transform duration-200 inline-block" style={{ transform: showFundBreakdown ? 'rotate(90deg)' : 'none' }}>
+                                &#9656;
+                              </span>
+                              Understand Fundamental Score
+                            </button>
+                            <div
+                              className="overflow-hidden transition-all duration-300 ease-in-out"
+                              style={{
+                                maxHeight: showFundBreakdown ? '900px' : '0px',
+                                opacity: showFundBreakdown ? 1 : 0,
+                              }}
+                            >
+                              <div className="pt-3">
+                                <FundamentalBreakdown
+                                  componentScores={s.componentScores}
+                                  fundamentalData={fundamentals}
+                                  ticker={ticker}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
               </div>
             )}
-
-            {/* Technical Score Breakdown — collapsible */}
-            {scores.find((s) => s.agentType === 'technical') && (() => {
-              const techScore = scores.find((s) => s.agentType === 'technical')!;
-              return (
-                <div>
-                  <button
-                    onClick={() => setShowTechBreakdown((v) => !v)}
-                    className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
-                  >
-                    <span className="transition-transform duration-200 inline-block" style={{ transform: showTechBreakdown ? 'rotate(90deg)' : 'none' }}>
-                      &#9656;
-                    </span>
-                    Understand Technical Score
-                  </button>
-                  <div
-                    className="overflow-hidden transition-all duration-300 ease-in-out"
-                    style={{
-                      maxHeight: showTechBreakdown ? '800px' : '0px',
-                      opacity: showTechBreakdown ? 1 : 0,
-                    }}
-                  >
-                    <div className="pt-3">
-                      <TechnicalBreakdown
-                        componentScores={techScore.componentScores}
-                        explanation={techScore.explanation}
-                        priceHistory={priceHistory}
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
 
             {/* Sentiment Explanation */}
             {sentimentScore?.explanation && (
