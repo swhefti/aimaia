@@ -14,6 +14,7 @@ import {
   getPortfolio,
   addPortfolioPosition,
   upsertPortfolioValuation,
+  setCashBalance,
 } from '@/lib/queries';
 import { formatCurrency, computeGoalProbability } from '@/lib/formatters';
 import { ASSET_TYPE_MAP, ASSET_UNIVERSE, CASH_FLOOR_PCT, MAX_POSITION_PCT } from '@shared/lib/constants';
@@ -536,8 +537,9 @@ export default function OnboardingPage() {
 
     try {
       if (!isGuest && portfolioIdRef.current) {
-        // Positions are already saved — just update the valuation
+        // Positions are already saved — just update the valuation and cash balance
         const cashValue = capital - investedValueRef.current;
+        await setCashBalance(supabase, portfolioIdRef.current!, Math.max(0, cashValue));
         const initProb = computeGoalProbability({
           cumulativeReturn: 0,
           goalReturn: returnGoalPct / 100,

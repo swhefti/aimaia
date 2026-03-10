@@ -96,6 +96,33 @@ export async function createPortfolio(
   return data.id;
 }
 
+// ---------- Portfolio Cash Balance ----------
+
+export async function getCashBalance(
+  supabase: SupabaseClient,
+  portfolioId: string,
+): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('portfolios')
+    .select('cash_balance')
+    .eq('id', portfolioId)
+    .single();
+  if (error || !data || data.cash_balance == null) return null;
+  return Number(data.cash_balance);
+}
+
+export async function setCashBalance(
+  supabase: SupabaseClient,
+  portfolioId: string,
+  amount: number,
+): Promise<void> {
+  const { error } = await supabase
+    .from('portfolios')
+    .update({ cash_balance: amount })
+    .eq('id', portfolioId);
+  if (error) throw error;
+}
+
 // ---------- Portfolio Positions ----------
 
 export async function getPortfolioPositions(

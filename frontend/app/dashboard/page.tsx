@@ -32,6 +32,8 @@ import {
   addPortfolioPosition,
   updatePortfolioPosition,
   removePortfolioPosition,
+  getCashBalance,
+  setCashBalance,
   getAllLatestPrices,
   getAllLatestScores,
   getAllQuotes,
@@ -89,6 +91,7 @@ export default function DashboardPage() {
   const [showAddPosition, setShowAddPosition] = useState(false);
   const [showSellPosition, setShowSellPosition] = useState(false);
   const [detailTicker, setDetailTicker] = useState<{ ticker: string; name?: string } | null>(null);
+  const [cashBalance, setCashBalanceState] = useState<number | null>(null);
   const [showRiskReport, setShowRiskReport] = useState(false);
   const [aiOpusPct, setAiOpusPct] = useState<number | null>(null);
   const [aiSonnetPct, setAiSonnetPct] = useState<number | null>(null);
@@ -353,6 +356,10 @@ export default function DashboardPage() {
       if (!userPortfolio) {
         try {
           const newId = await createPortfolio(supabase, user.id, 'My Portfolio');
+          // Initialize cash_balance to investment capital
+          await setCashBalance(supabase, newId, userProfile.investmentCapital);
+          setCashBalanceState(userProfile.investmentCapital);
+
           const newPortfolio: Portfolio = {
             id: newId,
             userId: user.id,
@@ -391,13 +398,15 @@ export default function DashboardPage() {
         return;
       }
 
-      const [pos, vals, recRun] = await Promise.all([
+      const [pos, vals, recRun, dbCash] = await Promise.all([
         getPortfolioPositions(supabase, userPortfolio.id),
         getPortfolioValuations(supabase, userPortfolio.id, 30),
         getLatestRecommendationRun(supabase, userPortfolio.id),
+        getCashBalance(supabase, userPortfolio.id),
       ]);
       setPositions(pos);
       setRun(recRun);
+      setCashBalanceState(dbCash);
 
       // Always compute a valuation from positions (source of truth)
       if (pos.length > 0 && userProfile) {
@@ -408,7 +417,7 @@ export default function DashboardPage() {
           posMarketValue += p.quantity * price;
           posCostBasis += p.quantity * p.avgPurchasePrice;
         }
-        const computedCash = Math.max(0, userProfile.investmentCapital - posCostBasis);
+        const computedCash = dbCash ?? Math.max(0, userProfile.investmentCapital - posCostBasis);
         const computedTotal = posMarketValue + computedCash;
         const cumulReturn = userProfile.investmentCapital > 0
           ? (computedTotal - userProfile.investmentCapital) / userProfile.investmentCapital
@@ -452,6 +461,32 @@ export default function DashboardPage() {
         upsertPortfolioValuation(
           supabase, userPortfolio.id, computedTotal, computedCash, 0, cumulReturn, todayVal.goalProbabilityPct
         ).catch(() => {});
+      } else if (userProfile) {
+        // No positions — total is just cash
+        const emptyTotal = dbCash ?? userProfile.investmentCapital;
+        const emptyCumReturn = userProfile.investmentCapital > 0
+          ? (emptyTotal - userProfile.investmentCapital) / userProfile.investmentCapital
+          : 0;
+        const emptyGoalProb = computeGoalProbability({
+          cumulativeReturn: emptyCumReturn,
+          goalReturn: userProfile.goalReturnPct,
+          monthsRemaining: userProfile.timeHorizonMonths,
+          positionCount: 0,
+          maxPositions: userProfile.maxPositions,
+          riskProfile: userProfile.riskProfile,
+        });
+        const today = new Date().toISOString().split('T')[0]!;
+        const emptyVal: PortfolioValuation = {
+          portfolioId: userPortfolio.id,
+          date: today,
+          totalValue: emptyTotal,
+          cashValue: emptyTotal,
+          dailyPnl: 0,
+          cumulativeReturnPct: emptyCumReturn,
+          goalProbabilityPct: emptyGoalProb,
+        };
+        const historical = vals.filter((v) => v.date !== today);
+        setValuations([...historical, emptyVal]);
       } else {
         setValuations(vals);
       }
@@ -537,6 +572,7 @@ export default function DashboardPage() {
     currentPositions: PortfolioPositionWithScore[],
     currentProfile: UserProfile,
     portfolioId: string,
+    cashBal?: number | null,
   ) => {
     const tickers = currentPositions.map((p) => p.ticker);
     let prices: Record<string, number> = {};
@@ -553,7 +589,8 @@ export default function DashboardPage() {
     }
 
     const initialCapital = currentProfile.investmentCapital;
-    const cashValue = Math.max(0, initialCapital - positionsCostBasis);
+    // Use tracked cash balance for real users; fall back to cost-basis formula for legacy/guest
+    const cashValue = (cashBal != null) ? cashBal : Math.max(0, initialCapital - positionsCostBasis);
     const totalValue = positionsMarketVal + cashValue;
     const cumulativeReturnPct = initialCapital > 0
       ? (totalValue - initialCapital) / initialCapital
@@ -736,6 +773,7 @@ export default function DashboardPage() {
 
     // Apply fee: reduce quantity by 1% (fee taken from the invested amount)
     const effectiveQty = quantity * feeMultiplier;
+    const cost = effectiveQty * pricePerUnit;
 
     const newPos: PortfolioPositionWithScore = {
       id: crypto.randomUUID(),
@@ -747,6 +785,14 @@ export default function DashboardPage() {
     };
     const updatedPositions = [...positions, newPos];
     setPositions(updatedPositions);
+
+    // Update cash balance for real users
+    let newCash = cashBalance;
+    if (!isGuest && cashBalance != null) {
+      newCash = Math.max(0, cashBalance - cost);
+      setCashBalanceState(newCash);
+      setCashBalance(supabase, portfolio.id, newCash).catch(() => {});
+    }
 
     if (isGuest) {
       sessionStorage.setItem('guest_positions', JSON.stringify(updatedPositions));
@@ -766,13 +812,24 @@ export default function DashboardPage() {
       }
     } catch { /* Non-blocking */ }
 
-    await recalculate(updatedPositions, profile, portfolio.id);
+    await recalculate(updatedPositions, profile, portfolio.id, newCash);
   }
 
   async function handleRemovePosition(positionId: string) {
     if (!portfolio || !profile) return;
+    const pos = positions.find((p) => p.id === positionId);
     const updatedPositions = positions.filter((p) => p.id !== positionId);
     setPositions(updatedPositions);
+
+    // Update cash balance for real users — add back proceeds at current market price
+    let newCash = cashBalance;
+    if (!isGuest && cashBalance != null && pos) {
+      const sellPrice = allPrices[pos.ticker] ?? pos.avgPurchasePrice;
+      const proceeds = pos.quantity * sellPrice;
+      newCash = cashBalance + proceeds;
+      setCashBalanceState(newCash);
+      setCashBalance(supabase, portfolio.id, newCash).catch(() => {});
+    }
 
     if (isGuest) {
       sessionStorage.setItem('guest_positions', JSON.stringify(updatedPositions));
@@ -780,10 +837,10 @@ export default function DashboardPage() {
       await removePortfolioPosition(supabase, positionId);
     }
 
-    await recalculate(updatedPositions, profile, portfolio.id);
+    await recalculate(updatedPositions, profile, portfolio.id, newCash);
   }
 
-  async function handleReducePosition(positionId: string, reduceQty: number, price: number) {
+  async function handleReducePosition(positionId: string, reduceQty: number, sellPrice: number) {
     if (!portfolio || !profile) return;
     const pos = positions.find((p) => p.id === positionId);
     if (!pos) return;
@@ -802,13 +859,22 @@ export default function DashboardPage() {
     );
     setPositions(updatedPositions);
 
+    // Update cash balance for real users — add proceeds
+    let newCash = cashBalance;
+    if (!isGuest && cashBalance != null) {
+      const proceeds = reduceQty * sellPrice;
+      newCash = cashBalance + proceeds;
+      setCashBalanceState(newCash);
+      setCashBalance(supabase, portfolio.id, newCash).catch(() => {});
+    }
+
     if (isGuest) {
       sessionStorage.setItem('guest_positions', JSON.stringify(updatedPositions));
     } else {
       await updatePortfolioPosition(supabase, positionId, remaining, pos.avgPurchasePrice);
     }
 
-    await recalculate(updatedPositions, profile, portfolio.id);
+    await recalculate(updatedPositions, profile, portfolio.id, newCash);
   }
 
   async function handleProfileUpdated(updated: UserProfile) {
@@ -862,12 +928,12 @@ export default function DashboardPage() {
   }
 
   const investmentCapital = profile?.investmentCapital ?? 0;
-  // Cash = initial capital minus what was invested at purchase time
+  // Use tracked cash balance for real users; fall back to cost-basis formula for legacy/guest
   let costBasis = 0;
   for (const p of positions) {
     costBasis += p.quantity * p.avgPurchasePrice;
   }
-  const cashValue = Math.max(0, investmentCapital - costBasis);
+  const cashValue = (cashBalance != null && !isGuest) ? cashBalance : Math.max(0, investmentCapital - costBasis);
   const investedValue = positionsMarketValue;
   const totalValue = investedValue + cashValue;
 
