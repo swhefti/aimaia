@@ -341,10 +341,11 @@ export function TickerDetailModal({
                           {hasBreakdown && (
                             <button
                               onClick={() => toggle((v) => !v)}
-                              className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-xs transition-colors ${isOpen ? 'text-accent-blue bg-accent-blue/10' : 'text-gray-500 hover:text-gray-300'}`}
+                              className={`shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium transition-colors ${isOpen ? 'text-accent-blue bg-accent-blue/15' : 'text-gray-400 hover:text-gray-200 bg-navy-700/50 hover:bg-navy-600/50'}`}
                               title={`${isOpen ? 'Hide' : 'Show'} breakdown`}
                             >
-                              &#9432;
+                              <span className="text-[11px]">&#9432;</span>
+                              <span className="transition-transform duration-200 text-[8px] inline-block" style={{ transform: isOpen ? 'rotate(180deg)' : 'none' }}>&#9660;</span>
                             </button>
                           )}
                         </div>
@@ -357,7 +358,7 @@ export function TickerDetailModal({
                               opacity: showTechBreakdown ? 1 : 0,
                             }}
                           >
-                            <div className="pt-3">
+                            <div className="mt-2 p-3 rounded-lg bg-navy-700/30 border border-navy-600/40">
                               <TechnicalBreakdown
                                 componentScores={s.componentScores}
                                 explanation={s.explanation}
@@ -375,7 +376,7 @@ export function TickerDetailModal({
                               opacity: showFundBreakdown ? 1 : 0,
                             }}
                           >
-                            <div className="pt-3">
+                            <div className="mt-2 p-3 rounded-lg bg-navy-700/30 border border-navy-600/40">
                               <FundamentalBreakdown
                                 componentScores={s.componentScores}
                                 fundamentalData={fundamentals}
