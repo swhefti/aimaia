@@ -7,6 +7,8 @@ import { ScoreBar } from '@/components/ui/score-bar';
 import { CompositeScoreGauge } from '@/components/ui/composite-score-gauge';
 import { LabeledBlock } from '@/components/ui/agent-badge';
 import { Button } from '@/components/ui/button';
+import { PriceChart } from '@/components/ui/price-chart';
+import type { PriceRow } from '@/components/ui/price-chart';
 import { formatCurrency, formatPct } from '@/lib/formatters';
 import {
   getAgentScoresForTicker,
@@ -85,6 +87,9 @@ export function TickerDetailModal({
   const [news, setNews] = useState<TickerNewsItem[]>([]);
   const [conclusion, setConclusion] = useState<TickerConclusion | null>(null);
   const [loadingData, setLoadingData] = useState(false);
+  const [priceHistory, setPriceHistory] = useState<PriceRow[]>([]);
+  const [priceHistoryRange, setPriceHistoryRange] = useState<{ from: string | null; to: string | null } | null>(null);
+  const [priceHistoryLoading, setPriceHistoryLoading] = useState(false);
 
   // Buy flow
   const [showBuyModal, setShowBuyModal] = useState(false);
@@ -101,11 +106,16 @@ export function TickerDetailModal({
       setFundamentals(null);
       setNews([]);
       setConclusion(null);
+      setPriceHistory([]);
+      setPriceHistoryRange(null);
       setShowBuyModal(false);
       setBuyAmount('');
       return;
     }
     setLoadingData(true);
+    setPriceHistoryLoading(true);
+
+    // Fetch scores/quote/fundamentals/news/conclusion in parallel
     Promise.all([
       getAgentScoresForTicker(supabase, ticker, undefined, asOfDate),
       getTickerQuote(supabase, ticker, asOfDate),
@@ -122,6 +132,19 @@ export function TickerDetailModal({
       })
       .catch(() => {})
       .finally(() => setLoadingData(false));
+
+    // Fetch price history in parallel
+    fetch(`/api/ticker/price-history?ticker=${encodeURIComponent(ticker)}&days=90`)
+      .then((res) => res.json())
+      .then((data: { rows?: { date: string; close: number }[]; dateRange?: { from: string | null; to: string | null } }) => {
+        setPriceHistory((data.rows ?? []).map((r) => ({ date: r.date, close: r.close })));
+        setPriceHistoryRange(data.dateRange ?? null);
+      })
+      .catch(() => {
+        setPriceHistory([]);
+        setPriceHistoryRange(null);
+      })
+      .finally(() => setPriceHistoryLoading(false));
   }, [open, ticker, supabase, asOfDate]);
 
   if (!open || !ticker) return null;
@@ -172,18 +195,21 @@ export function TickerDetailModal({
       const data = await res.json();
       setRefreshStatus(data.status === 'success' || data.status === 'partial' ? 'success' : 'error');
       // Re-fetch all data for this ticker
-      const [s, q, f, n, c] = await Promise.all([
+      const [s, q, f, n, c, ph] = await Promise.all([
         getAgentScoresForTicker(supabase, ticker, undefined, asOfDate),
         getTickerQuote(supabase, ticker, asOfDate),
         getTickerFundamentals(supabase, ticker, asOfDate),
         getTickerNews(supabase, ticker, 5, asOfDate),
         getTickerConclusion(supabase, ticker, asOfDate),
+        fetch(`/api/ticker/price-history?ticker=${encodeURIComponent(ticker)}&days=90`).then((r) => r.json()) as Promise<{ rows?: { date: string; close: number }[]; dateRange?: { from: string | null; to: string | null } }>,
       ]);
       setScores(s);
       setQuote(q);
       setFundamentals(f);
       setNews(n);
       setConclusion(c);
+      setPriceHistory((ph.rows ?? []).map((r) => ({ date: r.date, close: r.close })));
+      setPriceHistoryRange(ph.dateRange ?? null);
     } catch {
       setRefreshStatus('error');
     } finally {
@@ -269,6 +295,13 @@ export function TickerDetailModal({
                 </div>
               </div>
             )}
+
+            {/* Price Chart */}
+            <PriceChart
+              data={priceHistory}
+              dateRange={priceHistoryRange ?? undefined}
+              loading={priceHistoryLoading}
+            />
 
             {/* Agent Scores with Bars */}
             {scores.length > 0 && (

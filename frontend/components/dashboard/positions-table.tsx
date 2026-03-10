@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { ScoreBar } from '@/components/ui/score-bar';
 import { Labeled } from '@/components/ui/agent-badge';
+import { Sparkline } from '@/components/ui/sparkline';
 import { formatCurrency, formatScore } from '@/lib/formatters';
 import type { PortfolioPositionWithScore, TickerQuote } from '@/lib/queries';
 import type { AgentScore } from '@shared/types/scores';
@@ -34,6 +35,31 @@ function changeColor(pct: number): string {
 
 export function PositionsTable({ positions, totalValue, agentScores, latestScores, marketPrices = {}, marketQuotes = {} }: PositionsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [sparklines, setSparklines] = useState<Map<string, number[]>>(new Map());
+
+  useEffect(() => {
+    if (positions.length === 0) return;
+    const tickers = positions.map((p) => p.ticker);
+    Promise.all(
+      tickers.map(async (ticker) => {
+        try {
+          const res = await fetch(`/api/ticker/price-history?ticker=${encodeURIComponent(ticker)}&days=10`);
+          if (!res.ok) return [ticker, [] as number[]] as [string, number[]];
+          const json = await res.json();
+          const closes: number[] = (json.rows ?? []).map((r: { close: number }) => r.close).slice(-7);
+          return [ticker, closes] as [string, number[]];
+        } catch {
+          return [ticker, []] as [string, number[]];
+        }
+      }),
+    ).then((results) => {
+      const map = new Map<string, number[]>();
+      for (const [ticker, closes] of results) {
+        map.set(ticker, closes);
+      }
+      setSparklines(map);
+    });
+  }, [positions]);
 
   if (positions.length === 0) {
     return null;
@@ -69,6 +95,11 @@ export function PositionsTable({ positions, totalValue, agentScores, latestScore
                     {pos.asset?.name || pos.ticker}
                   </span>
                   <span className="text-[10px] text-gray-500 block leading-tight">{pos.ticker}</span>
+                </div>
+
+                {/* 7d Trend sparkline */}
+                <div className="shrink-0">
+                  <Sparkline data={sparklines.get(pos.ticker) ?? []} />
                 </div>
 
                 {/* Shares */}
