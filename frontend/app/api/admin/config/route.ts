@@ -1,0 +1,69 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { verifyAdminSession } from '@/app/admin/auth';
+
+function getServiceSupabase() {
+  const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
+  const key = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+  if (!url || !key) throw new Error('Missing Supabase env vars');
+  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+}
+
+export async function GET() {
+  const session = verifyAdminSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = getServiceSupabase();
+  const { data, error } = await supabase
+    .from('system_config')
+    .select('*')
+    .order('group_name')
+    .order('key');
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ config: data });
+}
+
+export async function POST(req: NextRequest) {
+  const session = verifyAdminSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const body = (await req.json()) as { updates: { key: string; value: string }[] };
+    const { updates } = body;
+
+    if (!updates || !Array.isArray(updates) || updates.length === 0) {
+      return NextResponse.json({ error: 'No updates provided' }, { status: 400 });
+    }
+
+    const supabase = getServiceSupabase();
+    const errors: string[] = [];
+
+    for (const item of updates) {
+      const { error } = await supabase
+        .from('system_config')
+        .update({ value: item.value, updated_at: new Date().toISOString() })
+        .eq('key', item.key);
+
+      if (error) {
+        errors.push(`${item.key}: ${error.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      return NextResponse.json({ error: 'Some updates failed', details: errors }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, updated: updates.length });
+  } catch (err) {
+    console.error('[Admin/Config] Error:', err);
+    return NextResponse.json({ error: 'Failed to update config' }, { status: 500 });
+  }
+}

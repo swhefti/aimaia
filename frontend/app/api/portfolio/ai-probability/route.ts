@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { getConfig, getConfigNumber } from '@/lib/config';
 
 /**
  * POST /api/portfolio/ai-probability?model=opus|sonnet
@@ -7,12 +8,17 @@ import Anthropic from '@anthropic-ai/sdk';
  * Called separately for each model so each gets its own Vercel timeout window.
  */
 
-const MODELS: Record<string, string> = {
+const DEFAULT_MODELS: Record<string, string> = {
   opus: 'claude-opus-4-6',
   sonnet: 'claude-sonnet-4-6',
 };
 
-function buildPrompt(data: {
+const MODEL_CONFIG_KEYS: Record<string, string> = {
+  opus: 'model_ai_probability_opus',
+  sonnet: 'model_ai_probability_sonnet',
+};
+
+async function buildPrompt(data: {
   goalReturnPct: number;
   timeHorizonMonths: number;
   riskProfile: string;
@@ -29,8 +35,8 @@ function buildPrompt(data: {
     allocationPct: number;
     unrealizedPnlPct: number;
   }>;
-}): { system: string; user: string } {
-  const system = `You are a portfolio probability analyst. Given a user's investment portfolio and their financial goal, estimate the probability (0-100%) that they will achieve their target return within the remaining time horizon.
+}): Promise<{ system: string; user: string }> {
+  const defaultPrompt = `You are a portfolio probability analyst. Given a user's investment portfolio and their financial goal, estimate the probability (0-100%) that they will achieve their target return within the remaining time horizon.
 
 Consider:
 - Current portfolio performance vs goal (progress so far)
@@ -45,6 +51,8 @@ Do NOT use any external scoring, sentiment analysis, or technical indicators. Ba
 
 Return ONLY a JSON object: {"probability": number, "reasoning": string}
 The probability must be between 0 and 100. The reasoning should be 1-2 sentences max.`;
+
+  const system = await getConfig('prompt_ai_probability', defaultPrompt);
 
   const posLines = data.positions.map((p) => {
     const pnl = p.unrealizedPnlPct >= 0 ? `+${(p.unrealizedPnlPct * 100).toFixed(1)}%` : `${(p.unrealizedPnlPct * 100).toFixed(1)}%`;
@@ -73,10 +81,11 @@ export async function POST(req: NextRequest) {
   }
 
   const modelKey = req.nextUrl.searchParams.get('model') ?? 'sonnet';
-  const modelId = MODELS[modelKey];
-  if (!modelId) {
+  const configKey = MODEL_CONFIG_KEYS[modelKey];
+  if (!configKey) {
     return NextResponse.json({ error: `Unknown model: ${modelKey}` }, { status: 400 });
   }
+  const modelId = await getConfig(configKey, DEFAULT_MODELS[modelKey] ?? 'claude-sonnet-4-6');
 
   let body: Record<string, unknown>;
   try {
@@ -104,13 +113,14 @@ export async function POST(req: NextRequest) {
     })),
   };
 
-  const { system, user } = buildPrompt(data);
+  const { system, user } = await buildPrompt(data);
   const anthropic = new Anthropic({ apiKey });
+  const maxTokens = await getConfigNumber('max_tokens_ai_probability', 300);
 
   try {
     const response = await anthropic.messages.create({
       model: modelId,
-      max_tokens: 300,
+      max_tokens: maxTokens,
       system,
       messages: [{ role: 'user', content: user }],
     });

@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
-
-const MODEL = 'claude-sonnet-4-20250514';
-const MAX_CHARS = 450;
+import { getConfig, getConfigNumber } from '@/lib/config';
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -64,6 +62,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ generated: 0, skipped: targetTickers.length, message: 'All up to date' });
     }
 
+    // Load config
+    const [conclusionModel, maxChars, maxTokens, promptTemplate] = await Promise.all([
+      getConfig('model_conclusion', 'claude-sonnet-4-6'),
+      getConfigNumber('max_chars_conclusion', 450),
+      getConfigNumber('max_tokens_conclusion', 300),
+      getConfig('prompt_conclusion', ''),
+    ]);
+
     // Batch-fetch data
     const [allScores, allNews, allAssets, allFundamentals, allQuotes, prevConclusions] = await Promise.all([
       fetchScores(supabase, today),
@@ -89,7 +95,7 @@ export async function POST(req: NextRequest) {
             fundamentals: allFundamentals[ticker],
             quote: allQuotes[ticker],
             prev: prevConclusions[ticker],
-          })
+          }, { model: conclusionModel, maxChars, maxTokens, promptTemplate })
         )
       );
 
@@ -132,7 +138,8 @@ async function generateOne(
     fundamentals?: { pe_ratio: number | null; revenue_growth_yoy: number | null; profit_margin: number | null; market_cap: number | null } | undefined;
     quote?: { last_price: number; pct_change: number } | undefined;
     prev?: { date: string; conclusion: string } | undefined;
-  }
+  },
+  cfg: { model: string; maxChars: number; maxTokens: number; promptTemplate: string }
 ) {
   const name = ctx.asset?.name ?? ticker;
   const type = ctx.asset?.asset_type ?? 'stock';
@@ -158,13 +165,19 @@ async function generateOne(
     ? `Price $${ctx.quote.last_price.toFixed(2)}, change ${(ctx.quote.pct_change * 100).toFixed(2)}%`
     : '';
 
-  const system = `Write a single paragraph (3–5 sentences, max ${MAX_CHARS} characters) analyzing ${name} (${ticker}), a ${type}.
+  const system = cfg.promptTemplate
+    ? cfg.promptTemplate
+        .replace(/\{\{name\}\}/g, name)
+        .replace(/\{\{ticker\}\}/g, ticker)
+        .replace(/\{\{type\}\}/g, type)
+        .replace(/\{\{max_chars\}\}/g, String(cfg.maxChars))
+    : `Write a single paragraph (3–5 sentences, max ${cfg.maxChars} characters) analyzing ${name} (${ticker}), a ${type}.
 
 Sentence 1: Brief intro — what ${name} is/does, current price.
 Sentences 2–3: What the agent scores collectively signal (technical, sentiment, fundamental, market regime) — weave into one picture.
 Sentence 4–5: Current news situation and implications.
 
-Rules: single paragraph, no bullets/headers, max ${MAX_CHARS} chars. Be specific with numbers. Never give advice. Output ONLY the paragraph.`;
+Rules: single paragraph, no bullets/headers, max ${cfg.maxChars} chars. Be specific with numbers. Never give advice. Output ONLY the paragraph.`;
 
   const user = [
     priceLine,
@@ -175,8 +188,8 @@ Rules: single paragraph, no bullets/headers, max ${MAX_CHARS} chars. Be specific
   ].filter(Boolean).join('\n');
 
   const resp = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 300,
+    model: cfg.model,
+    max_tokens: cfg.maxTokens,
     system,
     messages: [{ role: 'user', content: user }],
   });
@@ -187,10 +200,10 @@ Rules: single paragraph, no bullets/headers, max ${MAX_CHARS} chars. Be specific
     .join('')
     .trim();
 
-  if (text.length > MAX_CHARS) {
-    const cut = text.slice(0, MAX_CHARS);
+  if (text.length > cfg.maxChars) {
+    const cut = text.slice(0, cfg.maxChars);
     const lastDot = cut.lastIndexOf('.');
-    text = lastDot > MAX_CHARS * 0.5 ? cut.slice(0, lastDot + 1) : cut.trimEnd() + '...';
+    text = lastDot > cfg.maxChars * 0.5 ? cut.slice(0, lastDot + 1) : cut.trimEnd() + '...';
   }
 
   return { ticker, conclusion: text, date: dateStr };

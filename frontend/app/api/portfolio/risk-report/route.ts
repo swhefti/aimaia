@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
-
-const MODEL = 'claude-opus-4-6';
+import { getConfig, getConfigNumber } from '@/lib/config';
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -56,7 +55,15 @@ export async function POST(req: NextRequest) {
       .map((p) => `${p.ticker}: ${p.quantity.toFixed(4)} shares @ $${p.avgPurchasePrice.toFixed(2)} avg, market value $${p.marketValue.toFixed(2)} (${p.allocationPct.toFixed(1)}% of portfolio)`)
       .join('\n');
 
-    const systemPrompt = `You are a senior risk analyst at Bridgewater Associates trained by Ray Dalio's principles of radical transparency in investing.
+    const [model, promptTemplate, maxTokens] = await Promise.all([
+      getConfig('model_risk_report', 'claude-opus-4-6'),
+      getConfig('prompt_risk_report', ''),
+      getConfigNumber('max_tokens_risk_report', 1024),
+    ]);
+
+    const systemPrompt = promptTemplate
+      ? promptTemplate.replace('{{positions}}', positionsText)
+      : `You are a senior risk analyst at Bridgewater Associates trained by Ray Dalio's principles of radical transparency in investing.
 I need a complete risk assessment of my current portfolio.
 Evaluate:
 * Correlation analysis between my holdings
@@ -76,9 +83,10 @@ Length: between 200 and 250 words.`;
 
     const anthropic = new Anthropic({ apiKey });
     const resp = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: systemPrompt }],
+      model,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: `Please analyze the portfolio positions listed in the system prompt and generate the risk report.` }],
     });
 
     const report = resp.content
@@ -91,14 +99,14 @@ Length: between 200 and 250 words.`;
     const supabase = getServiceSupabase();
     const { data: inserted, error } = await supabase
       .from('portfolio_risk_reports')
-      .insert({ portfolio_id: portfolioId, report, model_used: MODEL })
+      .insert({ portfolio_id: portfolioId, report, model_used: model })
       .select('id, report, model_used, generated_at')
       .single();
 
     if (error) {
       console.error('[RiskReport] DB error:', error.message);
       // Return the report even if DB save fails
-      return NextResponse.json({ report: { report, model_used: MODEL, generated_at: new Date().toISOString() } });
+      return NextResponse.json({ report: { report, model_used: model, generated_at: new Date().toISOString() } });
     }
 
     return NextResponse.json({ report: inserted });

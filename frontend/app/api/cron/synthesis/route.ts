@@ -13,6 +13,7 @@ import {
   DEFAULT_AGENT_WEIGHTS,
   getWeightsForTicker,
 } from '@shared/lib/constants';
+import { getConfig, getConfigNumber } from '@/lib/config';
 import type {
   SynthesisContextPackage,
   SynthesisOutput,
@@ -682,11 +683,11 @@ function generateFallbackRecommendations(
 
 // ---- Narrative formatter ----
 
-function formatNarrative(output: SynthesisOutput): string {
+function formatNarrative(output: SynthesisOutput, maxChars = 1000): string {
   let narrative = output.portfolioNarrative;
   const paragraphs = narrative.split(/\n\n+/).filter((p) => p.trim().length > 0);
   if (paragraphs.length > 3) narrative = paragraphs.slice(0, 3).join('\n\n');
-  if (narrative.length > 1000) narrative = narrative.slice(0, 997) + '...';
+  if (narrative.length > maxChars) narrative = narrative.slice(0, maxChars - 3) + '...';
   return narrative.trim();
 }
 
@@ -730,10 +731,19 @@ async function runSynthesisForPortfolio(
   let runId: string | undefined;
   let llmSucceeded = false;
   let llmErrMsg: string | undefined;
+  let maxCharsNarrative = 1000;
 
   // 3. Try LLM synthesis
   try {
-    const systemPrompt = buildSystemPrompt();
+    const [synthesisModel, maxTokensSynthesis, synthSystemPrompt, narrativeMaxChars] = await Promise.all([
+      getConfig('model_synthesis', SYNTHESIS_MODEL),
+      getConfigNumber('max_tokens_synthesis', 4096),
+      getConfig('prompt_synthesis_system', ''),
+      getConfigNumber('max_chars_synthesis_narrative', 1000),
+    ]);
+    maxCharsNarrative = narrativeMaxChars;
+
+    const systemPrompt = synthSystemPrompt || buildSystemPrompt();
     const userPrompt = buildUserPrompt(context);
     const startTime = Date.now();
 
@@ -767,7 +777,7 @@ async function runSynthesisForPortfolio(
         user_id: userId,
         portfolio_id: portfolioId,
         run_date: dateStr,
-        model_used: SYNTHESIS_MODEL,
+        model_used: synthesisModel,
         input_tokens: 0,
         output_tokens: 0,
         latency_ms: 0,
@@ -784,8 +794,8 @@ async function runSynthesisForPortfolio(
     runId = runRecord.id as string;
 
     const response = await anthropic.messages.create({
-      model: SYNTHESIS_MODEL,
-      max_tokens: 4096,
+      model: synthesisModel,
+      max_tokens: maxTokensSynthesis,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     });
@@ -804,8 +814,8 @@ async function runSynthesisForPortfolio(
     } catch {
       // Retry with format reminder
       const retryResponse = await anthropic.messages.create({
-        model: SYNTHESIS_MODEL,
-        max_tokens: 4096,
+        model: synthesisModel,
+        max_tokens: maxTokensSynthesis,
         system: systemPrompt,
         messages: [
           { role: 'user', content: userPrompt },
@@ -911,7 +921,7 @@ async function runSynthesisForPortfolio(
   }
 
   // 4. Format narrative
-  finalOutput.portfolioNarrative = formatNarrative(finalOutput);
+  finalOutput.portfolioNarrative = formatNarrative(finalOutput, maxCharsNarrative);
 
   // 5. Write recommendation_runs
   const { data: recRun, error: recRunError } = await supabase

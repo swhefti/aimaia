@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { ASSET_TYPE_MAP, CRYPTO } from '@shared/lib/constants';
+import { getConfig, getConfigNumber } from '@/lib/config';
 
 /**
  * POST /api/ticker/refresh
@@ -180,15 +181,20 @@ async function runTechnical(supabase: ReturnType<typeof getServiceSupabase>, tic
 
 // ---- Step 3: Sentiment scoring (LLM) ----
 
-const SENTIMENT_MODEL = 'claude-haiku-4-5-20251001';
-const CRYPTO_MIN_QUALIFYING = 3;
-
 async function runSentiment(supabase: ReturnType<typeof getServiceSupabase>, ticker: string, dateStr: string): Promise<string> {
   const apiKey = process.env['ANTHROPIC_API_KEY'];
   if (!apiKey) return 'skipped (no ANTHROPIC_API_KEY)';
 
+  const sentimentLookbackDays = await getConfigNumber('sentiment_lookback_days', 10);
+  const SENTIMENT_MODEL = await getConfig('model_sentiment', 'claude-haiku-4-5-20251001');
+  const CRYPTO_MIN_QUALIFYING = await getConfigNumber('sentiment_min_articles_crypto', 3);
+  const sentimentDecay = await getConfigNumber('sentiment_decay_factor', 0.9);
+  const maxTokensSent = await getConfigNumber('max_tokens_sentiment', 300);
+  const promptSentiment = await getConfig('prompt_sentiment', 'You are a financial sentiment analyst. Analyze news for {{ticker}}. Return ONLY valid JSON.');
+  const promptFilter = await getConfig('prompt_sentiment_filter', 'You classify whether a crypto asset is the PRIMARY subject of news articles. Return ONLY valid JSON.');
+
   const tenDaysAgo = new Date(dateStr);
-  tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
+  tenDaysAgo.setDate(tenDaysAgo.getDate() - sentimentLookbackDays);
   const tenDaysAgoStr = tenDaysAgo.toISOString().split('T')[0]!;
   const isCrypto = ASSET_TYPE_MAP[ticker] === 'crypto';
 
@@ -207,8 +213,8 @@ async function runSentiment(supabase: ReturnType<typeof getServiceSupabase>, tic
     try {
       const articleList = newsItems.map((n, i) => `${i + 1}. ${n.headline}${n.summary ? ` — ${n.summary}` : ''}`).join('\n');
       const filterResp = await anthropic.messages.create({
-        model: SENTIMENT_MODEL, max_tokens: 300,
-        system: 'You classify whether a crypto asset is the PRIMARY subject of news articles. Return ONLY valid JSON.',
+        model: SENTIMENT_MODEL, max_tokens: maxTokensSent,
+        system: promptFilter,
         messages: [{ role: 'user', content: `Asset: ${ticker}\n\nArticles:\n${articleList}\n\nReturn: {"results": [true/false, ...]}` }],
       });
       const rawText = filterResp.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('');
@@ -228,7 +234,7 @@ async function runSentiment(supabase: ReturnType<typeof getServiceSupabase>, tic
     const yesterday = new Date(dateStr);
     yesterday.setDate(yesterday.getDate() - 1);
     const { data: prev } = await supabase.from('agent_scores').select('score').eq('ticker', ticker).eq('agent_type', 'sentiment').eq('date', yesterday.toISOString().split('T')[0]!).single();
-    const decayed = prev ? clamp(Number(prev.score) * 0.9, -1, 1) : 0;
+    const decayed = prev ? clamp(Number(prev.score) * sentimentDecay, -1, 1) : 0;
     await upsertScore(supabase, ticker, dateStr, 'sentiment', decayed, 0.1, { newsCount: 0, decayApplied: prev ? 1 : 0 }, 'No news, decayed previous', 'missing');
     return `decayed (score=${decayed.toFixed(2)})`;
   }
@@ -236,8 +242,8 @@ async function runSentiment(supabase: ReturnType<typeof getServiceSupabase>, tic
   // LLM sentiment analysis
   const newsList = newsItems.map((n, i) => `${i + 1}. [${n.published_at}] (${n.source}) ${n.headline}${n.summary ? ` — ${n.summary}` : ''}`).join('\n');
   const resp = await anthropic.messages.create({
-    model: SENTIMENT_MODEL, max_tokens: 300,
-    system: `You are a financial sentiment analyst. Analyze news for ${ticker}. Return ONLY valid JSON.`,
+    model: SENTIMENT_MODEL, max_tokens: maxTokensSent,
+    system: promptSentiment.replace(/\{\{ticker\}\}/g, ticker),
     messages: [{ role: 'user', content: `Articles:\n${newsList}\n\nReturn: {"sentiment_score": float, "confidence": float, "key_themes": string[], "reasoning": string}` }],
   });
 
@@ -313,12 +319,16 @@ async function runFundamental(supabase: ReturnType<typeof getServiceSupabase>, t
 
 // ---- Step 5: Conclusion generation ----
 
-const CONCLUSION_MODEL = 'claude-sonnet-4-20250514';
-const MAX_CHARS = 450;
-
 async function refreshConclusion(supabase: ReturnType<typeof getServiceSupabase>, ticker: string, dateStr: string): Promise<string> {
   const apiKey = process.env['ANTHROPIC_API_KEY'];
   if (!apiKey) return 'skipped (no ANTHROPIC_API_KEY)';
+
+  const [CONCLUSION_MODEL, MAX_CHARS, maxTokensConc, promptConc] = await Promise.all([
+    getConfig('model_conclusion', 'claude-sonnet-4-6'),
+    getConfigNumber('max_chars_conclusion', 450),
+    getConfigNumber('max_tokens_conclusion', 300),
+    getConfig('prompt_conclusion', ''),
+  ]);
 
   // Delete existing conclusion for today so we regenerate
   await supabase.from('ticker_conclusions').delete().eq('ticker', ticker).eq('date', dateStr);
@@ -356,7 +366,13 @@ async function refreshConclusion(supabase: ReturnType<typeof getServiceSupabase>
 
   const priceLine = quoteRes.data ? `Price $${Number(quoteRes.data.last_price).toFixed(2)}, change ${(Number(quoteRes.data.pct_change) * 100).toFixed(2)}%` : '';
 
-  const system = `Write a single paragraph (3–5 sentences, max ${MAX_CHARS} characters) analyzing ${name} (${ticker}), a ${assetType}.\nSentence 1: Brief intro, current price.\nSentences 2–3: What agent scores collectively signal.\nSentence 4–5: News situation.\nRules: single paragraph, no bullets, max ${MAX_CHARS} chars. Be specific. Never give advice. Output ONLY the paragraph.`;
+  const system = promptConc
+    ? promptConc
+        .replace(/\{\{name\}\}/g, name)
+        .replace(/\{\{ticker\}\}/g, ticker)
+        .replace(/\{\{type\}\}/g, assetType)
+        .replace(/\{\{max_chars\}\}/g, String(MAX_CHARS))
+    : `Write a single paragraph (3–5 sentences, max ${MAX_CHARS} characters) analyzing ${name} (${ticker}), a ${assetType}.\nSentence 1: Brief intro, current price.\nSentences 2–3: What agent scores collectively signal.\nSentence 4–5: News situation.\nRules: single paragraph, no bullets, max ${MAX_CHARS} chars. Be specific. Never give advice. Output ONLY the paragraph.`;
 
   const user = [
     priceLine,
@@ -367,7 +383,7 @@ async function refreshConclusion(supabase: ReturnType<typeof getServiceSupabase>
   ].filter(Boolean).join('\n');
 
   const resp = await anthropic.messages.create({
-    model: CONCLUSION_MODEL, max_tokens: 300, system,
+    model: CONCLUSION_MODEL, max_tokens: maxTokensConc, system,
     messages: [{ role: 'user', content: user }],
   });
 

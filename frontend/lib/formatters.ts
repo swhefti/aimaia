@@ -114,6 +114,14 @@ export function computeGoalProbability(opts: {
   positionCount?: number | undefined;
   maxPositions?: number | undefined;
   riskProfile?: string | undefined;
+  // Configurable constants — defaults match original hardcoded values
+  sigmoidMidpoint?: number | undefined;
+  sigmoidSteepness?: number | undefined;
+  aiScoreWeight?: number | undefined;
+  progressBonusMax?: number | undefined;
+  diversificationBonusMax?: number | undefined;
+  timeBonusMax?: number | undefined;
+  noPositionsCap?: number | undefined;
 }): number {
   const {
     cumulativeReturn,
@@ -123,10 +131,16 @@ export function computeGoalProbability(opts: {
     positionCount = 0,
     maxPositions = 10,
     riskProfile = 'balanced',
+    sigmoidMidpoint = 0.08,
+    sigmoidSteepness = 12,
+    aiScoreWeight = 8,
+    progressBonusMax = 10,
+    diversificationBonusMax = 3,
+    timeBonusMax = 5,
+    noPositionsCap = 35,
   } = opts;
 
   // 1. Progress factor: how far along are we toward the goal?
-  //    If goal is 0 or already exceeded, progress = 1+
   const progressRatio = goalReturn > 0
     ? cumulativeReturn / goalReturn
     : (cumulativeReturn >= 0 ? 1.5 : 0.5);
@@ -137,57 +151,44 @@ export function computeGoalProbability(opts: {
     ? (remainingNeeded / monthsRemaining) * 12
     : (remainingNeeded <= 0 ? -1 : 1);
 
-  // 3. Base probability from a sigmoid centered around the difficulty of the remaining goal
-  //    - annualizedNeeded <= 0: already achieved → high probability
-  //    - annualizedNeeded ~0.08 (8% annual): moderate difficulty → ~60%
-  //    - annualizedNeeded > 0.30: very hard → low probability
-  //    Sigmoid: P = 1 / (1 + e^(k * (annualizedNeeded - midpoint)))
-  const midpoint = 0.08; // 8% annualized is the "50/50" point
-  const steepness = 12;   // controls how sharply probability drops
-  const sigmoid = 1 / (1 + Math.exp(steepness * (annualizedNeeded - midpoint)));
+  // 3. Base probability from sigmoid
+  const sigmoid = 1 / (1 + Math.exp(sigmoidSteepness * (annualizedNeeded - sigmoidMidpoint)));
   let baseProbability = sigmoid * 100;
 
-  // 4. Progress bonus: if already ahead of schedule, boost probability
+  // 4. Progress bonus
   if (progressRatio > 0 && monthsRemaining > 0) {
-    // Expected progress at this point (linear interpolation)
-    // If original horizon is not available, estimate from remaining months
     const elapsedRatio = Math.max(0, 1 - (monthsRemaining / Math.max(monthsRemaining + 1, 12)));
     if (progressRatio > elapsedRatio && progressRatio > 0) {
-      const bonus = Math.min(10, (progressRatio - elapsedRatio) * 20);
+      const bonus = Math.min(progressBonusMax, (progressRatio - elapsedRatio) * 20);
       baseProbability += bonus;
     }
   }
 
-  // 5. AI score momentum bonus/penalty (-5 to +8 points)
+  // 5. AI score momentum
   if (avgCompositeScore !== undefined) {
-    // Score ranges from -1 to +1. Positive scores = tailwind
-    const scoreFactor = avgCompositeScore * 8; // -8 to +8
+    const scoreFactor = avgCompositeScore * aiScoreWeight;
     baseProbability += scoreFactor;
   }
 
-  // 6. Diversification factor: having positions is better than all cash
+  // 6. Diversification factor
   if (positionCount === 0 && goalReturn > 0) {
-    // No positions = low chance of hitting a positive return goal
-    baseProbability = Math.min(baseProbability, 35);
+    baseProbability = Math.min(baseProbability, noPositionsCap);
   } else if (positionCount > 0) {
-    // Mild bonus for diversification (up to +3 points)
     const diversificationRatio = Math.min(positionCount / Math.max(maxPositions, 1), 1);
-    baseProbability += diversificationRatio * 3;
+    baseProbability += diversificationRatio * diversificationBonusMax;
   }
 
-  // 7. Risk profile adjustment: aggressive profiles need higher returns
-  //    which are inherently less certain, but they accept that
+  // 7. Risk profile adjustment
   if (riskProfile === 'aggressive' && annualizedNeeded > 0.05) {
-    baseProbability += 3; // slight optimism for aggressive strategies
+    baseProbability += 3;
   } else if (riskProfile === 'conservative' && annualizedNeeded < 0.05) {
-    baseProbability += 2; // conservative goals are more achievable
+    baseProbability += 2;
   }
 
-  // 8. Time factor: more time = more opportunity (mild bonus if > 12 months)
+  // 8. Time factor
   if (monthsRemaining > 12 && remainingNeeded > 0) {
-    baseProbability += Math.min(5, (monthsRemaining - 12) / 12 * 2);
+    baseProbability += Math.min(timeBonusMax, (monthsRemaining - 12) / 12 * 2);
   }
 
-  // Clamp to 1–99 (never show 0% or 100%)
   return Math.round(Math.min(99, Math.max(1, baseProbability)) * 10) / 10;
 }

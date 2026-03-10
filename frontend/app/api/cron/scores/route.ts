@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { ASSET_UNIVERSE, ASSET_TYPE_MAP, CRYPTO } from '@shared/lib/constants';
+import { getConfig, getConfigNumber, getConfigBatch, getConfigNumberBatch } from '@/lib/config';
 
 /**
  * GET /api/cron/scores
@@ -11,9 +12,6 @@ import { ASSET_UNIVERSE, ASSET_TYPE_MAP, CRYPTO } from '@shared/lib/constants';
  */
 
 const CRYPTO_SET = new Set(CRYPTO);
-const SENTIMENT_MODEL = 'claude-haiku-4-5-20251001';
-const CONCLUSION_MODEL = 'claude-sonnet-4-20250514';
-const MAX_CHARS = 450;
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -27,6 +25,26 @@ function clamp(v: number, min: number, max: number) {
 }
 
 type SB = ReturnType<typeof getServiceSupabase>;
+
+interface CronConfig {
+  sentimentModel: string;
+  sentimentFilterModel: string;
+  conclusionModel: string;
+  promptSentiment: string;
+  promptSentimentFilter: string;
+  promptConclusion: string;
+  sentimentLookbackDays: number;
+  cryptoMinQualifying: number;
+  sentimentDecayFactor: number;
+  maxTokensSentiment: number;
+  maxTokensConclusion: number;
+  maxCharsConclusion: number;
+  subweightMacd: number;
+  subweightEma: number;
+  subweightRsi: number;
+  subweightBollinger: number;
+  subweightVolume: number;
+}
 
 // ---- Score upsert helper ----
 
@@ -69,7 +87,7 @@ function calculateRSI(closes: number[], period = 14): number {
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
-async function runTechnical(supabase: SB, ticker: string, dateStr: string): Promise<string> {
+async function runTechnical(supabase: SB, ticker: string, dateStr: string, cfg: CronConfig): Promise<string> {
   const { data: priceData } = await supabase
     .from('price_history').select('close, volume').eq('ticker', ticker)
     .lte('date', dateStr).order('date', { ascending: true }).limit(250);
@@ -126,7 +144,7 @@ async function runTechnical(supabase: SB, ticker: string, dateStr: string): Prom
     else if (ratio > 1.2 && priceChg < 0) volScore = -0.2;
   }
 
-  const score = clamp(macdScore * 0.30 + emaScore * 0.25 + rsiScore * 0.20 + bollScore * 0.15 + volScore * 0.10, -1, 1);
+  const score = clamp(macdScore * cfg.subweightMacd + emaScore * cfg.subweightEma + rsiScore * cfg.subweightRsi + bollScore * cfg.subweightBollinger + volScore * cfg.subweightVolume, -1, 1);
   const signs = [macdScore, emaScore, rsiScore, bollScore, volScore].map(Math.sign);
   const agreeing = signs.filter((s) => s === Math.sign(score)).length;
   let confidence = rows.length >= 200 ? 0.7 : 0.5;
@@ -141,12 +159,10 @@ async function runTechnical(supabase: SB, ticker: string, dateStr: string): Prom
 
 // ---- Sentiment scoring ----
 
-const CRYPTO_MIN_QUALIFYING = 3;
-
-async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthropic: Anthropic): Promise<string> {
-  const tenDaysAgo = new Date(dateStr);
-  tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
-  const tenDaysAgoStr = tenDaysAgo.toISOString().split('T')[0]!;
+async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthropic: Anthropic, cfg: CronConfig): Promise<string> {
+  const lookbackDate = new Date(dateStr);
+  lookbackDate.setDate(lookbackDate.getDate() - cfg.sentimentLookbackDays);
+  const tenDaysAgoStr = lookbackDate.toISOString().split('T')[0]!;
   const isCrypto = ASSET_TYPE_MAP[ticker] === 'crypto';
 
   const { data: newsData } = await supabase
@@ -162,8 +178,8 @@ async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthr
     try {
       const articleList = newsItems.map((n, i) => `${i + 1}. ${n.headline}${n.summary ? ` — ${n.summary}` : ''}`).join('\n');
       const filterResp = await anthropic.messages.create({
-        model: SENTIMENT_MODEL, max_tokens: 300,
-        system: 'You classify whether a crypto asset is the PRIMARY subject of news articles. Return ONLY valid JSON.',
+        model: cfg.sentimentFilterModel, max_tokens: cfg.maxTokensSentiment,
+        system: cfg.promptSentimentFilter,
         messages: [{ role: 'user', content: `Asset: ${ticker}\n\nArticles:\n${articleList}\n\nReturn: {"results": [true/false, ...]}` }],
       });
       const rawText = filterResp.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('');
@@ -172,25 +188,25 @@ async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthr
     } catch { /* keep all on failure */ }
   }
 
-  const insufficientNews = newsItems.length === 0 || (isCrypto && newsItems.length < CRYPTO_MIN_QUALIFYING);
+  const insufficientNews = newsItems.length === 0 || (isCrypto && newsItems.length < cfg.cryptoMinQualifying);
 
   if (insufficientNews) {
     if (isCrypto) {
       await upsertScore(supabase, ticker, dateStr, 'sentiment', 0, 0, { newsCount: totalFetched, qualifyingCount: newsItems.length }, 'Insufficient qualifying articles', 'missing');
-      return `missing (${newsItems.length}/${CRYPTO_MIN_QUALIFYING} articles)`;
+      return `missing (${newsItems.length}/${cfg.cryptoMinQualifying} articles)`;
     }
     const yesterday = new Date(dateStr);
     yesterday.setDate(yesterday.getDate() - 1);
     const { data: prev } = await supabase.from('agent_scores').select('score').eq('ticker', ticker).eq('agent_type', 'sentiment').eq('date', yesterday.toISOString().split('T')[0]!).single();
-    const decayed = prev ? clamp(Number(prev.score) * 0.9, -1, 1) : 0;
+    const decayed = prev ? clamp(Number(prev.score) * cfg.sentimentDecayFactor, -1, 1) : 0;
     await upsertScore(supabase, ticker, dateStr, 'sentiment', decayed, 0.1, { newsCount: 0, decayApplied: prev ? 1 : 0 }, 'No news, decayed previous', 'missing');
     return `decayed (score=${decayed.toFixed(2)})`;
   }
 
   const newsList = newsItems.map((n, i) => `${i + 1}. [${n.published_at}] (${n.source}) ${n.headline}${n.summary ? ` — ${n.summary}` : ''}`).join('\n');
   const resp = await anthropic.messages.create({
-    model: SENTIMENT_MODEL, max_tokens: 300,
-    system: `You are a financial sentiment analyst. Analyze news for ${ticker}. Return ONLY valid JSON.`,
+    model: cfg.sentimentModel, max_tokens: cfg.maxTokensSentiment,
+    system: cfg.promptSentiment.replace(/\{\{ticker\}\}/g, ticker),
     messages: [{ role: 'user', content: `Articles:\n${newsList}\n\nReturn: {"sentiment_score": float, "confidence": float, "key_themes": string[], "reasoning": string}` }],
   });
 
@@ -368,7 +384,7 @@ async function runRegime(supabase: SB, dateStr: string): Promise<{ stock: string
 
 // ---- Conclusion generation ----
 
-async function generateConclusions(supabase: SB, anthropic: Anthropic, dateStr: string): Promise<{ generated: number; errors: number }> {
+async function generateConclusions(supabase: SB, anthropic: Anthropic, dateStr: string, cfg: CronConfig): Promise<{ generated: number; errors: number }> {
   const tickers = [...ASSET_UNIVERSE];
 
   // Skip tickers that already have today's conclusion
@@ -411,15 +427,21 @@ async function generateConclusions(supabase: SB, anthropic: Anthropic, dateStr: 
         }
         const priceLine = quote ? `Price $${quote.last_price.toFixed(2)}, change ${(quote.pct_change * 100).toFixed(2)}%` : '';
 
-        const system = `Write a single paragraph (3-5 sentences, max ${MAX_CHARS} characters) analyzing ${name} (${ticker}), a ${type}.\nSentence 1: Brief intro, current price.\nSentences 2-3: What agent scores collectively signal.\nSentence 4-5: News situation.\nRules: single paragraph, no bullets, max ${MAX_CHARS} chars. Be specific. Never give advice. Output ONLY the paragraph.`;
+        const system = cfg.promptConclusion
+          ? cfg.promptConclusion
+              .replace(/\{\{name\}\}/g, name)
+              .replace(/\{\{ticker\}\}/g, ticker)
+              .replace(/\{\{type\}\}/g, type)
+              .replace(/\{\{max_chars\}\}/g, String(cfg.maxCharsConclusion))
+          : `Write a single paragraph (3-5 sentences, max ${cfg.maxCharsConclusion} characters) analyzing ${name} (${ticker}), a ${type}.\nSentence 1: Brief intro, current price.\nSentences 2-3: What agent scores collectively signal.\nSentence 4-5: News situation.\nRules: single paragraph, no bullets, max ${cfg.maxCharsConclusion} chars. Be specific. Never give advice. Output ONLY the paragraph.`;
         const user = [priceLine, `Scores: ${scoreParts.join('; ') || 'none'}`, fundParts.length ? `Fundamentals: ${fundParts.join(', ')}` : '', `News: ${newsParts.join('; ') || 'no recent news'}`].filter(Boolean).join('\n');
 
-        const resp = await anthropic.messages.create({ model: CONCLUSION_MODEL, max_tokens: 300, system, messages: [{ role: 'user', content: user }] });
+        const resp = await anthropic.messages.create({ model: cfg.conclusionModel, max_tokens: cfg.maxTokensConclusion, system, messages: [{ role: 'user', content: user }] });
         let text = resp.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('').trim();
-        if (text.length > MAX_CHARS) {
-          const cut = text.slice(0, MAX_CHARS);
+        if (text.length > cfg.maxCharsConclusion) {
+          const cut = text.slice(0, cfg.maxCharsConclusion);
           const lastDot = cut.lastIndexOf('.');
-          text = lastDot > MAX_CHARS * 0.5 ? cut.slice(0, lastDot + 1) : cut.trimEnd() + '...';
+          text = lastDot > cfg.maxCharsConclusion * 0.5 ? cut.slice(0, lastDot + 1) : cut.trimEnd() + '...';
         }
 
         const { error } = await supabase.from('ticker_conclusions').upsert({ ticker, date: dateStr, conclusion: text }, { onConflict: 'ticker,date' });
@@ -509,6 +531,51 @@ export async function GET(req: NextRequest) {
   const anthropic = new Anthropic({ apiKey });
   const tickers = [...ASSET_UNIVERSE];
 
+  // Load runtime config
+  const [cfgStrings, cfgNumbers] = await Promise.all([
+    getConfigBatch({
+      model_sentiment: 'claude-haiku-4-5-20251001',
+      model_sentiment_filter: 'claude-haiku-4-5-20251001',
+      model_conclusion: 'claude-sonnet-4-6',
+      prompt_sentiment: 'You are a financial sentiment analyst. Analyze news for {{ticker}}. Return ONLY valid JSON.',
+      prompt_sentiment_filter: 'You classify whether a crypto asset is the PRIMARY subject of news articles. Return ONLY valid JSON.',
+      prompt_conclusion: '',
+    }),
+    getConfigNumberBatch({
+      sentiment_lookback_days: 10,
+      sentiment_min_articles_crypto: 3,
+      sentiment_decay_factor: 0.9,
+      max_tokens_sentiment: 300,
+      max_tokens_conclusion: 300,
+      max_chars_conclusion: 450,
+      subweight_technical_macd: 0.30,
+      subweight_technical_ema: 0.25,
+      subweight_technical_rsi: 0.20,
+      subweight_technical_bollinger: 0.15,
+      subweight_technical_volume: 0.10,
+    }),
+  ]);
+
+  const cronCfg: CronConfig = {
+    sentimentModel: cfgStrings['model_sentiment']!,
+    sentimentFilterModel: cfgStrings['model_sentiment_filter']!,
+    conclusionModel: cfgStrings['model_conclusion']!,
+    promptSentiment: cfgStrings['prompt_sentiment']!,
+    promptSentimentFilter: cfgStrings['prompt_sentiment_filter']!,
+    promptConclusion: cfgStrings['prompt_conclusion']!,
+    sentimentLookbackDays: cfgNumbers['sentiment_lookback_days']!,
+    cryptoMinQualifying: cfgNumbers['sentiment_min_articles_crypto']!,
+    sentimentDecayFactor: cfgNumbers['sentiment_decay_factor']!,
+    maxTokensSentiment: cfgNumbers['max_tokens_sentiment']!,
+    maxTokensConclusion: cfgNumbers['max_tokens_conclusion']!,
+    maxCharsConclusion: cfgNumbers['max_chars_conclusion']!,
+    subweightMacd: cfgNumbers['subweight_technical_macd']!,
+    subweightEma: cfgNumbers['subweight_technical_ema']!,
+    subweightRsi: cfgNumbers['subweight_technical_rsi']!,
+    subweightBollinger: cfgNumbers['subweight_technical_bollinger']!,
+    subweightVolume: cfgNumbers['subweight_technical_volume']!,
+  };
+
   const scoreResults: Record<string, { technical: string; sentiment: string; fundamental: string }> = {};
   let totalSuccess = 0;
   let totalErrors = 0;
@@ -519,8 +586,8 @@ export async function GET(req: NextRequest) {
     await Promise.allSettled(
       batch.map(async (ticker) => {
         const results = { technical: '', sentiment: '', fundamental: '' };
-        try { results.technical = await runTechnical(supabase, ticker, dateStr); } catch (e) { results.technical = `error: ${e instanceof Error ? e.message : e}`; }
-        try { results.sentiment = await runSentiment(supabase, ticker, dateStr, anthropic); } catch (e) { results.sentiment = `error: ${e instanceof Error ? e.message : e}`; }
+        try { results.technical = await runTechnical(supabase, ticker, dateStr, cronCfg); } catch (e) { results.technical = `error: ${e instanceof Error ? e.message : e}`; }
+        try { results.sentiment = await runSentiment(supabase, ticker, dateStr, anthropic, cronCfg); } catch (e) { results.sentiment = `error: ${e instanceof Error ? e.message : e}`; }
         try { results.fundamental = await runFundamental(supabase, ticker, dateStr); } catch (e) { results.fundamental = `error: ${e instanceof Error ? e.message : e}`; }
         scoreResults[ticker] = results;
 
@@ -540,7 +607,7 @@ export async function GET(req: NextRequest) {
   // Conclusions
   console.log('[Cron/Scores] Generating conclusions...');
   let conclusionResult = { generated: 0, errors: 0 };
-  try { conclusionResult = await generateConclusions(supabase, anthropic, dateStr); } catch (e) { console.error('[Cron/Scores] Conclusion generation failed:', e); }
+  try { conclusionResult = await generateConclusions(supabase, anthropic, dateStr, cronCfg); } catch (e) { console.error('[Cron/Scores] Conclusion generation failed:', e); }
 
   const completedAt = new Date().toISOString();
   console.log(`[Cron/Scores] Done at ${completedAt}: ${totalSuccess} tickers scored, ${totalErrors} errors, ${conclusionResult.generated} conclusions`);
