@@ -207,89 +207,117 @@ function generateRecommendations(
     ICP: 'Internet Computer', ALGO: 'Algorand', XLM: 'Stellar', VET: 'VeChain',
   };
 
-  // Filter to assets that have both a score and a price, respecting user preferences
-  const candidates = ASSET_UNIVERSE
-    .filter((t) => {
-      if (scores[t] === undefined || prices[t] === undefined || prices[t]! <= 0) return false;
-      if (allowedAssetTypes && allowedAssetTypes.length > 0) {
-        const type = ASSET_TYPE_MAP[t] ?? 'stock';
-        if (!allowedAssetTypes.includes(type as AssetType)) return false;
-      }
-      if (allowedTickers && allowedTickers.size > 0 && !allowedTickers.has(t)) return false;
-      return true;
-    })
-    .map((t) => ({
-      ticker: t,
-      score: scores[t]!,
-      price: prices[t]!,
-      type: ASSET_TYPE_MAP[t] ?? 'stock',
-    }))
-    .sort((a, b) => b.score - a.score);
+  const hasScores = Object.keys(scores).length > 0;
+  const hasPrices = Object.keys(prices).length > 0;
 
-  // Fallback defaults for when we have no or insufficient scored candidates
-  const FALLBACK_TICKERS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'VOO', 'VTI', 'GLD', 'AMZN', 'NVDA', 'META', 'JNJ'];
-  const fallbackPrices: Record<string, number> = {
+  // Hardcoded fallback prices (last resort when market_quotes is empty)
+  const FALLBACK_PRICES: Record<string, number> = {
     SPY: 520, QQQ: 450, AAPL: 185, MSFT: 420, GOOGL: 155, VOO: 480,
     VTI: 260, GLD: 195, AMZN: 185, NVDA: 880, META: 510, JNJ: 155,
+    BTC: 68000, ETH: 3600, AVGO: 170, NFLX: 620, AMD: 160, TSLA: 175,
   };
 
-  if (candidates.length === 0) {
-    // No scored candidates at all — use fallback defaults
-    const fallback = FALLBACK_TICKERS.slice(0, maxPositions);
+  // Helper: resolve price for a ticker
+  const getPrice = (t: string): number | undefined => {
+    const p = prices[t] ?? FALLBACK_PRICES[t];
+    return p && p > 0 ? p : undefined;
+  };
+
+  // Build candidate pool: every ticker that passes user preference filters
+  // AND has at least a price (score can be missing — we'll use 0)
+  const allFiltered = ASSET_UNIVERSE.filter((t) => {
+    if (!getPrice(t)) return false;
+    if (allowedAssetTypes && allowedAssetTypes.length > 0) {
+      const type = ASSET_TYPE_MAP[t] ?? 'stock';
+      if (!allowedAssetTypes.includes(type as AssetType)) return false;
+    }
+    if (allowedTickers && allowedTickers.size > 0 && !allowedTickers.has(t)) return false;
+    return true;
+  });
+
+  // Split into scored (have real composite score) and unscored
+  const scored: { ticker: string; score: number; price: number; type: string }[] = [];
+  const unscored: { ticker: string; score: number; price: number; type: string }[] = [];
+
+  for (const t of allFiltered) {
+    const entry = {
+      ticker: t,
+      score: scores[t] ?? 0,
+      price: getPrice(t)!,
+      type: ASSET_TYPE_MAP[t] ?? 'stock',
+    };
+    if (scores[t] !== undefined) {
+      scored.push(entry);
+    } else {
+      unscored.push(entry);
+    }
+  }
+
+  // Sort scored by score descending; unscored stay as-is (universe order)
+  scored.sort((a, b) => b.score - a.score);
+
+  // Build selected list: prefer scored candidates, fill remainder with unscored
+  const selected = [
+    ...scored.slice(0, maxPositions),
+    ...unscored.slice(0, Math.max(0, maxPositions - scored.length)),
+  ].slice(0, maxPositions);
+
+  // Edge case: no candidates at all (no prices, no data)
+  if (selected.length === 0) {
+    const defaults = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'VOO', 'VTI', 'GLD', 'AMZN', 'NVDA', 'META', 'JNJ'];
+    const fallback = defaults.slice(0, maxPositions);
     const equalAlloc = Math.round((100 * (1 - CASH_FLOOR_PCT)) / fallback.length * 10) / 10;
     return fallback.map((ticker) => ({
       ticker,
       name: ASSET_NAMES[ticker] ?? ticker,
       assetType: ASSET_TYPE_MAP[ticker] ?? 'stock',
-      score: 0,
+      score: scores[ticker] ?? 0,
       allocationPct: equalAlloc,
-      reasoning: `Recommended as a diversified, well-established ${ASSET_TYPE_MAP[ticker] === 'etf' ? 'ETF' : 'stock'} for your portfolio foundation. Market data will be available after the daily analysis pipeline runs.`,
-      price: prices[ticker] ?? fallbackPrices[ticker] ?? 100,
+      reasoning: `Recommended as a diversified, well-established ${ASSET_TYPE_MAP[ticker] === 'etf' ? 'ETF' : 'stock'} for your portfolio foundation.${!hasScores ? ' Market scores will be available after the daily analysis pipeline runs.' : ''}`,
+      price: getPrice(ticker) ?? FALLBACK_PRICES[ticker] ?? 100,
     }));
   }
 
-  // Pick top N — take the best-scoring candidates regardless of sign
-  let selected = candidates.slice(0, maxPositions);
-
-  // If we have fewer candidates than maxPositions, supplement with fallback defaults
-  if (selected.length < maxPositions) {
-    const usedTickers = new Set(selected.map((c) => c.ticker));
-    for (const ticker of FALLBACK_TICKERS) {
-      if (selected.length >= maxPositions) break;
-      if (usedTickers.has(ticker)) continue;
-      selected.push({
-        ticker,
-        score: 0,
-        price: prices[ticker] ?? fallbackPrices[ticker] ?? 100,
-        type: ASSET_TYPE_MAP[ticker] ?? 'stock',
-      });
-      usedTickers.add(ticker);
-    }
-  }
-
-  // Allocate proportionally — shift scores so the minimum is positive for sensible ratios
-  const minScore = Math.min(...selected.map((c) => c.score));
-  const shift = minScore < 0.01 ? Math.abs(minScore) + 0.01 : 0;
-  const shiftedScores = selected.map((c) => c.score + shift);
-  const totalShifted = shiftedScores.reduce((sum, s) => sum + s, 0);
+  // Allocation: proportional based on score, shifted so all weights are positive
   const investablePct = 100 * (1 - CASH_FLOOR_PCT); // 95%
   const maxSinglePct = MAX_POSITION_PCT * 100; // 30%
 
-  const recs: PortfolioRecommendation[] = selected.map((c, i) => {
-    const rawAlloc = (shiftedScores[i]! / totalShifted) * investablePct;
-    const allocationPct = Math.round(Math.min(rawAlloc, maxSinglePct) * 10) / 10;
+  // If all scores are identical (or all unscored), use equal allocation
+  const scoreRange = Math.max(...selected.map((c) => c.score)) - Math.min(...selected.map((c) => c.score));
+  const useEqualAlloc = scoreRange < 0.01 || !hasScores;
 
+  let allocations: number[];
+  if (useEqualAlloc) {
+    const equalPct = Math.round((investablePct / selected.length) * 10) / 10;
+    allocations = selected.map(() => Math.min(equalPct, maxSinglePct));
+  } else {
+    // Shift scores so minimum becomes 0.01 (all positive for proportional math)
+    const minScore = Math.min(...selected.map((c) => c.score));
+    const shift = minScore < 0.01 ? Math.abs(minScore) + 0.01 : 0;
+    const shifted = selected.map((c) => c.score + shift);
+    const totalShifted = shifted.reduce((sum, s) => sum + s, 0);
+    allocations = shifted.map((s) => {
+      const raw = (s / totalShifted) * investablePct;
+      return Math.round(Math.min(raw, maxSinglePct) * 10) / 10;
+    });
+  }
+
+  const recs: PortfolioRecommendation[] = selected.map((c, i) => {
+    const allocationPct = allocations[i]!;
     const signal = c.score >= 0.6 ? 'Strong Buy' : c.score >= 0.2 ? 'Buy'
       : c.score >= -0.19 ? 'Hold' : c.score >= -0.59 ? 'Sell' : 'Strong Sell';
     const typeLabel = c.type === 'etf' ? 'ETF' : c.type === 'crypto' ? 'cryptocurrency' : 'stock';
+    const hasRealScore = scores[c.ticker] !== undefined;
 
     let reasoning = '';
-    if (c.score >= 0.6) {
+    if (!hasRealScore) {
+      reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is a well-established ${typeLabel} selected for portfolio diversification. AI scores will be available after the analysis pipeline runs. `;
+    } else if (c.score >= 0.6) {
       reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} shows strong bullish signals across technical and fundamental analysis (score: ${c.score.toFixed(2)}). `;
     } else if (c.score >= 0.2) {
       reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} has positive momentum with a composite score of ${c.score.toFixed(2)}. `;
     } else if (c.score >= -0.19) {
-      reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is a neutral pick among the best available options (score: ${c.score.toFixed(2)}). `;
+      reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is a neutral pick among the top-ranked options (score: ${c.score.toFixed(2)}). `;
     } else {
       reasoning = `${ASSET_NAMES[c.ticker] ?? c.ticker} is the best available candidate in the current market (score: ${c.score.toFixed(2)}). `;
     }
@@ -426,16 +454,18 @@ export default function OnboardingPage() {
         }
       }
 
-      // Fetch scores and prices (non-blocking — fallback handles missing data)
+      // Fetch scores and prices independently — don't let one failure kill both
       let scores: Record<string, number> = {};
       let prices: Record<string, number> = {};
       try {
-        [scores, prices] = await Promise.all([
-          getAllLatestScores(supabase),
-          getAllLatestPrices(supabase),
-        ]);
-      } catch {
-        // Continue with empty data — generateRecommendations has a fallback
+        scores = await getAllLatestScores(supabase);
+      } catch (err) {
+        console.error('Failed to load scores:', err);
+      }
+      try {
+        prices = await getAllLatestPrices(supabase);
+      } catch (err) {
+        console.error('Failed to load prices:', err);
       }
 
       // Create portfolio upfront so positions can be saved immediately on approve
