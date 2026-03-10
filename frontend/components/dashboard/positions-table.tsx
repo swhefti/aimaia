@@ -8,7 +8,7 @@ import { Sparkline } from '@/components/ui/sparkline';
 import { formatCurrency, formatScore } from '@/lib/formatters';
 import type { PortfolioPositionWithScore, TickerQuote } from '@/lib/queries';
 import type { AgentScore } from '@shared/types/scores';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, Search, Plus, Minus } from 'lucide-react';
 
 interface PositionsTableProps {
   positions: PortfolioPositionWithScore[];
@@ -17,6 +17,10 @@ interface PositionsTableProps {
   latestScores: Record<string, number>;
   marketPrices?: Record<string, number>;
   marketQuotes?: Record<string, TickerQuote>;
+  cashAvailable?: number;
+  onOpenDetail?: (ticker: string, tickerName?: string) => void;
+  onAddToPosition?: (ticker: string, quantity: number, pricePerUnit: number) => Promise<void>;
+  onReducePosition?: (positionId: string, reduceQty: number, price: number) => Promise<void>;
 }
 
 function scoreBg(score: number): string {
@@ -33,9 +37,25 @@ function changeColor(pct: number): string {
   return 'text-gray-500';
 }
 
-export function PositionsTable({ positions, totalValue, agentScores, latestScores, marketPrices = {}, marketQuotes = {} }: PositionsTableProps) {
+export function PositionsTable({
+  positions,
+  totalValue,
+  agentScores,
+  latestScores,
+  marketPrices = {},
+  marketQuotes = {},
+  cashAvailable = 0,
+  onOpenDetail,
+  onAddToPosition,
+  onReducePosition,
+}: PositionsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [sparklines, setSparklines] = useState<Map<string, number[]>>(new Map());
+
+  // Inline action state
+  const [actionMode, setActionMode] = useState<{ posId: string; mode: 'add' | 'reduce' } | null>(null);
+  const [actionAmount, setActionAmount] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     if (positions.length === 0) return;
@@ -61,8 +81,41 @@ export function PositionsTable({ positions, totalValue, agentScores, latestScore
     });
   }, [positions]);
 
+  // Reset action mode when expanded position changes
+  useEffect(() => {
+    setActionMode(null);
+    setActionAmount('');
+  }, [expanded]);
+
   if (positions.length === 0) {
     return null;
+  }
+
+  function handleActionSubmit(pos: PortfolioPositionWithScore, price: number) {
+    if (!actionMode || actionLoading) return;
+    const amount = parseFloat(actionAmount);
+    if (!amount || amount <= 0) return;
+
+    setActionLoading(true);
+
+    if (actionMode.mode === 'add' && onAddToPosition) {
+      const qty = amount / price;
+      onAddToPosition(pos.ticker, qty, price)
+        .then(() => {
+          setActionMode(null);
+          setActionAmount('');
+        })
+        .finally(() => setActionLoading(false));
+    } else if (actionMode.mode === 'reduce' && onReducePosition) {
+      onReducePosition(pos.id, amount, price)
+        .then(() => {
+          setActionMode(null);
+          setActionAmount('');
+        })
+        .finally(() => setActionLoading(false));
+    } else {
+      setActionLoading(false);
+    }
   }
 
   return (
@@ -78,6 +131,7 @@ export function PositionsTable({ positions, totalValue, agentScores, latestScore
           const compositeScore = latestScores[pos.ticker];
           const isExpanded = expanded === pos.id;
           const scores = agentScores[pos.ticker] || [];
+          const currentAction = actionMode?.posId === pos.id ? actionMode : null;
 
           return (
             <div key={pos.id}>
@@ -172,6 +226,145 @@ export function PositionsTable({ positions, totalValue, agentScores, latestScore
                     <span>Avg: {formatCurrency(pos.avgPurchasePrice)}</span>
                     <span>Price: {formatCurrency(price)}</span>
                   </div>
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-2 mt-2.5">
+                    {onOpenDetail && (
+                      <button
+                        onClick={() => onOpenDetail(pos.ticker, pos.asset?.name)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-navy-700/60 text-xs text-gray-300 hover:bg-navy-600/60 hover:text-white transition-colors"
+                      >
+                        <Search className="h-3 w-3" /> Details
+                      </button>
+                    )}
+                    {onAddToPosition && (
+                      <button
+                        onClick={() => {
+                          setActionMode(currentAction?.mode === 'add' ? null : { posId: pos.id, mode: 'add' });
+                          setActionAmount('');
+                        }}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors ${
+                          currentAction?.mode === 'add'
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-navy-700/60 text-gray-300 hover:bg-navy-600/60 hover:text-white'
+                        }`}
+                      >
+                        <Plus className="h-3 w-3" /> Add
+                      </button>
+                    )}
+                    {onReducePosition && (
+                      <button
+                        onClick={() => {
+                          setActionMode(currentAction?.mode === 'reduce' ? null : { posId: pos.id, mode: 'reduce' });
+                          setActionAmount('');
+                        }}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors ${
+                          currentAction?.mode === 'reduce'
+                            ? 'bg-red-500/20 text-red-400'
+                            : 'bg-navy-700/60 text-gray-300 hover:bg-navy-600/60 hover:text-white'
+                        }`}
+                      >
+                        <Minus className="h-3 w-3" /> Reduce
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Inline Add form */}
+                  {currentAction?.mode === 'add' && (
+                    <div className="mt-2 p-2.5 rounded-lg bg-navy-700/40 border border-navy-600/40 space-y-2">
+                      <div className="flex items-baseline justify-between text-[10px] text-gray-500">
+                        <span>Buy more {pos.ticker} at {formatCurrency(price)}</span>
+                        <span>Cash: {formatCurrency(cashAvailable)}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs">$</span>
+                          <input
+                            type="number"
+                            value={actionAmount}
+                            onChange={(e) => setActionAmount(e.target.value)}
+                            placeholder="Amount"
+                            min={1}
+                            max={cashAvailable}
+                            className="w-full pl-5 pr-2 py-1.5 bg-navy-800 border border-navy-500 rounded text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-accent-blue"
+                            autoFocus
+                          />
+                        </div>
+                        <button
+                          onClick={() => handleActionSubmit(pos, price)}
+                          disabled={
+                            actionLoading ||
+                            !actionAmount ||
+                            parseFloat(actionAmount) <= 0 ||
+                            parseFloat(actionAmount) > cashAvailable
+                          }
+                          className="px-3 py-1.5 rounded bg-emerald-600 text-xs text-white font-medium hover:bg-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {actionLoading ? '...' : 'Buy'}
+                        </button>
+                      </div>
+                      {actionAmount && parseFloat(actionAmount) > 0 && parseFloat(actionAmount) <= cashAvailable && (
+                        <p className="text-[10px] text-gray-500">
+                          &asymp; {(parseFloat(actionAmount) / price).toFixed(price > 100 ? 4 : 6)} shares
+                        </p>
+                      )}
+                      {actionAmount && parseFloat(actionAmount) > cashAvailable && (
+                        <p className="text-[10px] text-red-400">Exceeds available cash</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Inline Reduce form */}
+                  {currentAction?.mode === 'reduce' && (
+                    <div className="mt-2 p-2.5 rounded-lg bg-navy-700/40 border border-navy-600/40 space-y-2">
+                      <div className="flex items-baseline justify-between text-[10px] text-gray-500">
+                        <span>Sell {pos.ticker} at {formatCurrency(price)}</span>
+                        <span>Holdings: {pos.quantity.toFixed(pos.quantity < 10 ? 4 : 2)} shares</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="number"
+                            value={actionAmount}
+                            onChange={(e) => setActionAmount(e.target.value)}
+                            placeholder="Shares to sell"
+                            min={0}
+                            max={pos.quantity}
+                            step="any"
+                            className="w-full px-2 py-1.5 bg-navy-800 border border-navy-500 rounded text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-red-500/50"
+                            autoFocus
+                          />
+                        </div>
+                        <button
+                          onClick={() => setActionAmount(String(pos.quantity))}
+                          className="px-2 py-1.5 rounded bg-navy-600 text-[10px] text-gray-300 hover:bg-navy-500 transition-colors"
+                        >
+                          Sell All
+                        </button>
+                        <button
+                          onClick={() => handleActionSubmit(pos, price)}
+                          disabled={
+                            actionLoading ||
+                            !actionAmount ||
+                            parseFloat(actionAmount) <= 0 ||
+                            parseFloat(actionAmount) > pos.quantity
+                          }
+                          className="px-3 py-1.5 rounded bg-red-600 text-xs text-white font-medium hover:bg-red-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {actionLoading ? '...' : 'Sell'}
+                        </button>
+                      </div>
+                      {actionAmount && parseFloat(actionAmount) > 0 && parseFloat(actionAmount) <= pos.quantity && (
+                        <p className="text-[10px] text-gray-500">
+                          Proceeds: {formatCurrency(parseFloat(actionAmount) * price)}
+                          {parseFloat(actionAmount) === pos.quantity && ' (close position)'}
+                        </p>
+                      )}
+                      {actionAmount && parseFloat(actionAmount) > pos.quantity && (
+                        <p className="text-[10px] text-red-400">Exceeds current holdings</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

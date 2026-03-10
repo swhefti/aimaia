@@ -15,6 +15,7 @@ import { SettingsPanel } from '@/components/dashboard/settings-panel';
 import { AddPositionModal } from '@/components/dashboard/add-position-modal';
 import { Logo } from '@/components/ui/logo';
 import { SellPositionModal } from '@/components/dashboard/sell-position-modal';
+import { TickerDetailModal } from '@/components/market/ticker-detail-modal';
 import { RecommendationCard } from '@/components/portfolio/recommendation-card';
 import { ReasoningModal } from '@/components/portfolio/reasoning-modal';
 import { Button } from '@/components/ui/button';
@@ -87,6 +88,7 @@ export default function DashboardPage() {
   const [reasoningId, setReasoningId] = useState<string | null>(null);
   const [showAddPosition, setShowAddPosition] = useState(false);
   const [showSellPosition, setShowSellPosition] = useState(false);
+  const [detailTicker, setDetailTicker] = useState<{ ticker: string; name?: string } | null>(null);
   const [showRiskReport, setShowRiskReport] = useState(false);
   const [aiOpusPct, setAiOpusPct] = useState<number | null>(null);
   const [aiSonnetPct, setAiSonnetPct] = useState<number | null>(null);
@@ -781,6 +783,34 @@ export default function DashboardPage() {
     await recalculate(updatedPositions, profile, portfolio.id);
   }
 
+  async function handleReducePosition(positionId: string, reduceQty: number, price: number) {
+    if (!portfolio || !profile) return;
+    const pos = positions.find((p) => p.id === positionId);
+    if (!pos) return;
+
+    const remaining = pos.quantity - reduceQty;
+
+    if (remaining <= 0.000001) {
+      // Sell all — remove position entirely
+      await handleRemovePosition(positionId);
+      return;
+    }
+
+    // Partial sell — update position with reduced quantity, keep avg price
+    const updatedPositions = positions.map((p) =>
+      p.id === positionId ? { ...p, quantity: remaining } : p,
+    );
+    setPositions(updatedPositions);
+
+    if (isGuest) {
+      sessionStorage.setItem('guest_positions', JSON.stringify(updatedPositions));
+    } else {
+      await updatePortfolioPosition(supabase, positionId, remaining, pos.avgPurchasePrice);
+    }
+
+    await recalculate(updatedPositions, profile, portfolio.id);
+  }
+
   async function handleProfileUpdated(updated: UserProfile) {
     setProfile(updated);
     if (isGuest) {
@@ -1040,6 +1070,10 @@ export default function DashboardPage() {
                     latestScores={latestScores}
                     marketPrices={allPrices}
                     marketQuotes={allQuotes}
+                    cashAvailable={cashValue}
+                    onOpenDetail={(ticker, name) => setDetailTicker({ ticker, ...(name ? { name } : {}) })}
+                    onAddToPosition={handleAddPosition}
+                    onReducePosition={handleReducePosition}
                   />
                   <div className="flex gap-3 mt-3">
                     <Button
@@ -1122,6 +1156,15 @@ export default function DashboardPage() {
           positions={positions}
           marketPrices={allPrices}
           onSell={handleRemovePosition}
+        />
+
+        <TickerDetailModal
+          open={!!detailTicker}
+          onClose={() => setDetailTicker(null)}
+          ticker={detailTicker?.ticker ?? null}
+          tickerName={detailTicker?.name}
+          preloadedPrice={detailTicker ? allPrices[detailTicker.ticker] : undefined}
+          asOfDate={asOfDate}
         />
 
         {!isGuest && (
