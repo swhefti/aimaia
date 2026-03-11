@@ -104,6 +104,10 @@ export function TickerDetailModal({
   const [showTechBreakdown, setShowTechBreakdown] = useState(false);
   // Fundamental breakdown
   const [showFundBreakdown, setShowFundBreakdown] = useState(false);
+  // Sentiment info
+  const [showSentimentInfo, setShowSentimentInfo] = useState(false);
+  // Regime info
+  const [showRegimeInfo, setShowRegimeInfo] = useState(false);
 
   // Dynamic weights from system_config
   const [weightsConfig, setWeightsConfig] = useState<WeightsConfig>(null);
@@ -125,6 +129,8 @@ export function TickerDetailModal({
       setBuyAmount('');
       setShowTechBreakdown(false);
       setShowFundBreakdown(false);
+      setShowSentimentInfo(false);
+      setShowRegimeInfo(false);
       return;
     }
     setLoadingData(true);
@@ -336,21 +342,46 @@ export function TickerDetailModal({
             />
 
             {/* Agent Scores with Bars */}
-            {scores.length > 0 && (
+            {scores.length > 0 && (() => {
+              const scoreOrder = ['technical', 'fundamental', 'sentiment', 'market_regime'];
+              const sortedScores = [...scores].sort(
+                (a, b) => scoreOrder.indexOf(a.agentType) - scoreOrder.indexOf(b.agentType)
+              );
+              // Compute news date range for sentiment info
+              const newsDateRange = news.length > 0
+                ? {
+                    count: news.length,
+                    from: new Date(Math.min(...news.map((n) => new Date(n.publishedAt).getTime()))),
+                    to: new Date(Math.max(...news.map((n) => new Date(n.publishedAt).getTime()))),
+                  }
+                : null;
+              const daySpan = newsDateRange
+                ? Math.max(1, Math.round((newsDateRange.to.getTime() - newsDateRange.from.getTime()) / (1000 * 60 * 60 * 24)))
+                : 0;
+              return (
               <div>
                 <h3 className="text-sm font-medium text-gray-400 mb-3">Agent Scores</h3>
                 <div className="space-y-2">
-                  {scores.map((s) => {
+                  {sortedScores.map((s) => {
                     const label = s.agentType === 'technical' ? 'Technical Score'
                       : s.agentType === 'sentiment' ? 'Sentiment Score'
                       : s.agentType === 'fundamental' ? 'Fundamental Score'
                       : s.agentType === 'market_regime' ? 'Market Regime'
                       : `${s.agentType} Score`;
-                    const hasBreakdown =
+                    const hasDetailBreakdown =
                       (s.agentType === 'technical') ||
                       (s.agentType === 'fundamental' && !isCrypto);
-                    const isOpen = s.agentType === 'technical' ? showTechBreakdown : showFundBreakdown;
-                    const toggle = s.agentType === 'technical' ? setShowTechBreakdown : setShowFundBreakdown;
+                    const hasInfoButton = hasDetailBreakdown || s.agentType === 'sentiment' || s.agentType === 'market_regime';
+                    const isOpen = s.agentType === 'technical' ? showTechBreakdown
+                      : s.agentType === 'fundamental' ? showFundBreakdown
+                      : s.agentType === 'sentiment' ? showSentimentInfo
+                      : s.agentType === 'market_regime' ? showRegimeInfo
+                      : false;
+                    const toggle = s.agentType === 'technical' ? setShowTechBreakdown
+                      : s.agentType === 'fundamental' ? setShowFundBreakdown
+                      : s.agentType === 'sentiment' ? setShowSentimentInfo
+                      : s.agentType === 'market_regime' ? setShowRegimeInfo
+                      : setShowRegimeInfo;
                     return (
                       <div key={s.agentType}>
                         <div className="flex items-center gap-1.5">
@@ -361,18 +392,15 @@ export function TickerDetailModal({
                               confidence={s.confidence}
                             />
                           </div>
-                          {hasBreakdown && (
+                          {hasInfoButton && (
                             <button
-                              onClick={() => toggle((v) => !v)}
+                              onClick={() => toggle((v: boolean) => !v)}
                               className={`shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium transition-colors ${isOpen ? 'text-accent-blue bg-accent-blue/15' : 'text-gray-400 hover:text-gray-200 bg-navy-700/50 hover:bg-navy-600/50'}`}
-                              title={`${isOpen ? 'Hide' : 'Show'} breakdown`}
+                              title={`${isOpen ? 'Hide' : 'Show'} info`}
                             >
                               <span className="text-[11px]">&#9432;</span>
                               <span className="transition-transform duration-200 text-[8px] inline-block" style={{ transform: isOpen ? 'rotate(180deg)' : 'none' }}>&#9660;</span>
                             </button>
-                          )}
-                          {s.agentType === 'market_regime' && (
-                            <span className="text-[10px] text-gray-500 ml-1" title="Broad market conditions (shared signal)">Shared signal</span>
                           )}
                         </div>
                         {/* Technical Score Breakdown — collapsible */}
@@ -411,18 +439,55 @@ export function TickerDetailModal({
                             </div>
                           </div>
                         )}
+                        {/* Sentiment Info — collapsible */}
+                        {s.agentType === 'sentiment' && (
+                          <div
+                            className="overflow-hidden transition-all duration-300 ease-in-out"
+                            style={{
+                              maxHeight: showSentimentInfo ? '200px' : '0px',
+                              opacity: showSentimentInfo ? 1 : 0,
+                            }}
+                          >
+                            <div className="mt-2 p-3 rounded-lg bg-navy-600/25 border border-navy-500/30">
+                              <p className="text-xs text-gray-300 leading-relaxed">
+                                {newsDateRange
+                                  ? `This score is the conclusion of ${newsDateRange.count} article${newsDateRange.count !== 1 ? 's' : ''} from the last ${daySpan} day${daySpan !== 1 ? 's' : ''}. The sentiment agent analyzes recent news headlines and summaries to gauge market sentiment for this asset.`
+                                  : 'This score reflects the overall sentiment derived from recent news coverage. No recent articles were found for this ticker.'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                        {/* Regime Info — collapsible */}
+                        {s.agentType === 'market_regime' && (
+                          <div
+                            className="overflow-hidden transition-all duration-300 ease-in-out"
+                            style={{
+                              maxHeight: showRegimeInfo ? '200px' : '0px',
+                              opacity: showRegimeInfo ? 1 : 0,
+                            }}
+                          >
+                            <div className="mt-2 p-3 rounded-lg bg-navy-600/25 border border-navy-500/30">
+                              <p className="text-xs text-gray-300 leading-relaxed">
+                                {isCrypto
+                                  ? 'The market regime score evaluates broad crypto market conditions by analyzing BTC and ETH price trends, volatility, and momentum. It is a shared signal applied to all crypto assets.'
+                                  : 'The market regime score evaluates broad stock market conditions by analyzing SPY, XLK, and XLV price trends, volatility, and momentum. It is a shared signal applied to all stock and ETF assets.'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* Sentiment Explanation */}
             {sentimentScore?.explanation && (
               <LabeledBlock agent="sentiment">
                 <h3 className="text-sm font-medium text-gray-400 mb-2">Sentiment Analysis</h3>
-                <p className="text-sm text-gray-300 leading-relaxed">{sentimentScore.explanation}</p>
+                <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-line">{sentimentScore.explanation}</p>
               </LabeledBlock>
             )}
 
