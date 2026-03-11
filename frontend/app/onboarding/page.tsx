@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/auth-provider';
 import { Button } from '@/components/ui/button';
@@ -35,17 +35,11 @@ const INDUSTRIES = [
   { id: 'technology', label: 'Technology', tickers: ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'AVGO', 'ADBE', 'CRM', 'NFLX', 'AMD', 'QCOM', 'TXN', 'INTC', 'IBM', 'NOW', 'SNOW', 'PLTR', 'SHOP', 'XLK'] },
   { id: 'finance', label: 'Finance', tickers: ['JPM', 'V', 'MA', 'GS', 'MS', 'BAC', 'PYPL', 'SQ', 'COIN', 'HOOD', 'SOFI', 'XLF'] },
   { id: 'healthcare', label: 'Healthcare', tickers: ['JNJ', 'UNH', 'LLY', 'ABBV', 'MRK', 'XLV'] },
-  { id: 'energy', label: 'Energy', tickers: ['XOM', 'XLE', 'USO'] },
-  { id: 'consumer', label: 'Consumer & Retail', tickers: ['PG', 'HD', 'PEP', 'KO', 'COST', 'WMT', 'TGT', 'DIS'] },
-  { id: 'industrial', label: 'Industrial', tickers: ['HON', 'BA', 'CAT', 'GE', 'XLI'] },
-  { id: 'automotive', label: 'Automotive & EV', tickers: ['TSLA', 'F', 'GM', 'RIVN', 'LCID', 'NIO'] },
-  { id: 'transport', label: 'Transport & Mobility', tickers: ['UBER', 'LYFT'] },
-  { id: 'social', label: 'Social & Gaming', tickers: ['PINS', 'SNAP', 'RBLX'] },
-  { id: 'international', label: 'International', tickers: ['BABA', 'JD', 'PDD', 'VEA', 'EEM'] },
+  { id: 'consumer', label: 'Consumer & Entertainment', tickers: ['PG', 'HD', 'PEP', 'KO', 'COST', 'WMT', 'TGT', 'DIS', 'PINS', 'SNAP', 'RBLX'] },
+  { id: 'energy_industrial', label: 'Energy & Industrial', tickers: ['XOM', 'XLE', 'USO', 'HON', 'BA', 'CAT', 'GE', 'XLI'] },
+  { id: 'automotive', label: 'Automotive & Mobility', tickers: ['TSLA', 'F', 'GM', 'RIVN', 'LCID', 'NIO', 'UBER', 'LYFT'] },
   { id: 'crypto', label: 'Cryptocurrency', tickers: ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC', 'LTC', 'BCH', 'ATOM', 'UNI', 'AAVE', 'FIL', 'ICP', 'ALGO', 'XLM', 'VET'] },
-  { id: 'bonds', label: 'Bonds & Fixed Income', tickers: ['TLT', 'HYG', 'LQD'] },
-  { id: 'commodities', label: 'Commodities', tickers: ['GLD', 'SLV'] },
-  { id: 'broad_market', label: 'Broad Market ETFs', tickers: ['SPY', 'QQQ', 'IWM', 'VTI', 'VOO', 'ARKK', 'SCHD'] },
+  { id: 'global_diversified', label: 'Global & Diversified Markets', tickers: ['BABA', 'JD', 'PDD', 'VEA', 'EEM', 'TLT', 'HYG', 'LQD', 'GLD', 'SLV', 'SPY', 'QQQ', 'IWM', 'VTI', 'VOO', 'ARKK', 'SCHD'] },
 ] as const;
 
 function formatHorizon(months: number): string {
@@ -409,11 +403,6 @@ export default function OnboardingPage() {
 
   const riskProfile = deriveRiskProfile(returnGoalPct, maxReturnPct);
 
-  // Capitalize label helper
-  const capitalLabel = useCallback((v: number) => {
-    if (v >= 1000) return `$${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
-    return `$${v}`;
-  }, []);
 
   async function handleCalculate() {
     if (!user) return;
@@ -678,8 +667,6 @@ export default function OnboardingPage() {
   // Current recommendation for the modal
   const currentRec = recommendations[currentRecIdx];
 
-  // Slider tick marks for capital
-  const capitalTicks = [100, 1000, 5000, 10000, 25000, 50000, 100000];
 
   return (
     <main className="flex items-center justify-center min-h-screen px-4 py-8">
@@ -706,21 +693,18 @@ export default function OnboardingPage() {
             {step === 0 && (
               <Card padding="lg">
                 <div className="space-y-6 text-center py-4">
-                  <Sparkles className="h-12 w-12 text-accent-blue mx-auto" />
+                  <Sparkles className="h-10 w-10 text-accent-blue mx-auto" strokeWidth={1.5} />
                   <div>
                     <h1 className="text-2xl font-bold text-white">
-                      Welcome{user?.user_metadata?.full_name ? `, ${user.user_metadata.full_name.split(' ')[0]}` : ''}!
+                      Welcome {user?.user_metadata?.full_name ? user.user_metadata.full_name.split(' ')[0] : ''}
                     </h1>
                     <p className="text-gray-400 mt-3 leading-relaxed max-w-md mx-auto">
-                      MAIPA is your AI-powered portfolio advisor. It analyzes 100 assets daily — stocks, ETFs, and crypto — and delivers personalized recommendations based on your goals and risk tolerance.
-                    </p>
-                    <p className="text-gray-500 text-sm mt-2">
-                      Answer a few quick questions so we can build your ideal portfolio.
+                      aiMAIA is your AI-powered portfolio advisor. It analyzes 100 assets daily and delivers personalized recommendations based on your goals and risk tolerance.
                     </p>
                   </div>
-                  <div className="flex items-center justify-center gap-4 pt-2">
+                  <div className="flex flex-col items-center gap-3 pt-2">
                     <Button size="lg" onClick={() => setStep(1)}>
-                      Build Portfolio <ChevronRight className="h-4 w-4 ml-1" />
+                      Build Portfolio
                     </Button>
                     <button
                       onClick={() => {
@@ -745,7 +729,7 @@ export default function OnboardingPage() {
                       }}
                       className="text-sm text-gray-400 hover:text-gray-300 transition-colors underline underline-offset-2"
                     >
-                      Skip
+                      Skip for now
                     </button>
                   </div>
                 </div>
@@ -757,14 +741,14 @@ export default function OnboardingPage() {
               {/* Step 1: Investment Capital */}
               {step === 1 && (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <Wallet className="h-6 w-6 text-accent-blue shrink-0" />
+                  <div className="flex flex-col items-center gap-3">
+                    <Wallet className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
                     <h2 className="text-xl font-semibold text-white">How much are you investing?</h2>
                   </div>
                   <div className="text-center">
                     <span className="text-4xl font-bold text-white">{formatCurrency(capital)}</span>
                   </div>
-                  <div className="space-y-2">
+                  <div>
                     <input
                       type="range"
                       min={100}
@@ -774,11 +758,6 @@ export default function OnboardingPage() {
                       onChange={(e) => setCapital(Number(e.target.value))}
                       className="w-full accent-accent-blue"
                     />
-                    <div className="flex justify-between text-xs text-gray-500">
-                      {capitalTicks.map((v) => (
-                        <span key={v}>{capitalLabel(v)}</span>
-                      ))}
-                    </div>
                   </div>
                 </div>
               )}
@@ -786,9 +765,9 @@ export default function OnboardingPage() {
               {/* Step 2: Time Horizon */}
               {step === 2 && (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <Clock className="h-6 w-6 text-accent-blue shrink-0" />
-                    <div>
+                  <div className="flex flex-col items-center gap-3">
+                    <Clock className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
+                    <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">What&apos;s your investment horizon?</h2>
                       <p className="text-sm text-gray-400 mt-1">
                         How long do you plan to keep this portfolio active?
@@ -819,38 +798,48 @@ export default function OnboardingPage() {
               )}
 
               {/* Step 3: Return Goal */}
-              {step === 3 && (
+              {step === 3 && (() => {
+                // Slider works in annualized return space (1% to 18%)
+                const annualizedGoal = annualized;
+                const minAnnual = 1;
+                const maxAnnual = 18;
+                const handleAnnualChange = (annualPct: number) => {
+                  // Convert annualized % back to total return % for the given horizon
+                  const totalReturn = (Math.pow(1 + annualPct / 100, horizonMonths / 12) - 1) * 100;
+                  setReturnGoalPct(Math.round(Math.min(totalReturn, maxReturnPct) * 10) / 10);
+                };
+                return (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <Target className="h-6 w-6 text-accent-blue shrink-0" />
-                    <div>
+                  <div className="flex flex-col items-center gap-3">
+                    <Target className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
+                    <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">What&apos;s your return goal?</h2>
                       <p className="text-sm text-gray-400 mt-1">
-                        Total return on invested capital over your {formatHorizon(horizonMonths)} horizon.
+                        Annualized return target over your {formatHorizon(horizonMonths)} horizon.
                       </p>
                     </div>
                   </div>
                   <div className="text-center">
                     <span className="text-4xl font-bold text-white">
-                      {returnGoalPct >= maxReturnPct ? `${returnGoalPct.toFixed(1)}%+` : `${returnGoalPct.toFixed(1)}%`}
+                      {annualizedGoal.toFixed(1)}%
                     </span>
                     <span className="text-sm text-gray-400 ml-2">
-                      ({annualized.toFixed(1)}% annualized)
+                      annualized ({returnGoalPct.toFixed(1)}% total)
                     </span>
                   </div>
                   <div className="space-y-2">
                     <input
                       type="range"
-                      min={0.5}
-                      max={maxReturnPct}
+                      min={minAnnual}
+                      max={maxAnnual}
                       step={0.1}
-                      value={returnGoalPct}
-                      onChange={(e) => setReturnGoalPct(Number(e.target.value))}
+                      value={Math.min(annualizedGoal, maxAnnual)}
+                      onChange={(e) => handleAnnualChange(Number(e.target.value))}
                       className="w-full accent-accent-blue"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
-                      <span>0.5%</span>
-                      <span>{maxReturnPct}%+</span>
+                      <span>{minAnnual}%</span>
+                      <span>{maxAnnual}%</span>
                     </div>
                   </div>
 
@@ -875,14 +864,15 @@ export default function OnboardingPage() {
                     })}
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* Step 4: Risk Tolerance */}
               {step === 4 && (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <Shield className="h-6 w-6 text-accent-blue shrink-0" />
-                    <div>
+                  <div className="flex flex-col items-center gap-3">
+                    <Shield className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
+                    <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">How much risk can you handle?</h2>
                       <p className="text-sm text-gray-400 mt-1">
                         This helps us calibrate position sizing and asset selection.
@@ -956,9 +946,9 @@ export default function OnboardingPage() {
               {/* Step 5: Asset Types */}
               {step === 5 && (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <BarChart3 className="h-6 w-6 text-accent-blue shrink-0" />
-                    <div>
+                  <div className="flex flex-col items-center gap-3">
+                    <BarChart3 className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
+                    <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">What do you want to invest in?</h2>
                       <p className="text-sm text-gray-400 mt-1">
                         Select which asset types to include in your portfolio.
@@ -1008,9 +998,9 @@ export default function OnboardingPage() {
               {/* Step 6: Industries */}
               {step === 6 && (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <Factory className="h-6 w-6 text-accent-blue shrink-0" />
-                    <div>
+                  <div className="flex flex-col items-center gap-3">
+                    <Factory className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
+                    <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">Which industries interest you?</h2>
                       <p className="text-sm text-gray-400 mt-1">
                         Pick the sectors you want the AI to consider. You can select multiple.
@@ -1075,9 +1065,9 @@ export default function OnboardingPage() {
               {/* Step 7: Portfolio Size */}
               {step === 7 && (
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <Layers className="h-6 w-6 text-accent-blue shrink-0" />
-                    <div>
+                  <div className="flex flex-col items-center gap-3">
+                    <Layers className="h-8 w-8 text-accent-blue" strokeWidth={1.5} />
+                    <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">How many positions?</h2>
                       <p className="text-sm text-gray-400 mt-1">
                         More positions means broader diversification, but smaller individual allocations.
