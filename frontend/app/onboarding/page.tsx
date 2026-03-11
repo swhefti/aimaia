@@ -715,25 +715,33 @@ export default function OnboardingPage() {
                       Build Portfolio
                     </Button>
                     <button
-                      onClick={() => {
-                        // Mark onboarding as completed and go to dashboard without positions
+                      onClick={async () => {
                         if (!isGuest && user) {
-                          supabase.from('user_profiles')
-                            .upsert({
-                              user_id: user.id,
-                              onboarding_completed_at: new Date().toISOString(),
-                              investment_capital: 10000,
-                              time_horizon_months: 12,
-                              risk_profile: 'balanced',
-                              goal_return_pct: 0.07,
-                              max_drawdown_limit_pct: 15,
-                              volatility_tolerance: 'balanced',
-                              max_positions: 8,
-                            }, { onConflict: 'user_id' })
-                            .then(() => router.push('/dashboard'));
-                        } else {
-                          router.push('/dashboard');
+                          const DEFAULT_CAPITAL = 10000;
+                          try {
+                            await supabase.from('user_profiles')
+                              .upsert({
+                                user_id: user.id,
+                                onboarding_completed_at: new Date().toISOString(),
+                                investment_capital: DEFAULT_CAPITAL,
+                                time_horizon_months: 12,
+                                risk_profile: 'balanced',
+                                goal_return_pct: 0.07,
+                                max_drawdown_limit_pct: 15,
+                                volatility_tolerance: 'balanced',
+                                max_positions: 8,
+                              }, { onConflict: 'user_id' });
+
+                            const existing = await getPortfolio(supabase, user.id);
+                            if (!existing) {
+                              const newId = await createPortfolio(supabase, user.id, 'My Portfolio');
+                              await setCashBalance(supabase, newId, DEFAULT_CAPITAL);
+                            }
+                          } catch (err) {
+                            console.error('Skip setup error:', err);
+                          }
                         }
+                        router.push('/dashboard');
                       }}
                       className="text-sm text-gray-400 hover:text-gray-300 transition-colors underline underline-offset-2"
                     >

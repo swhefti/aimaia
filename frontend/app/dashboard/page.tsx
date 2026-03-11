@@ -401,46 +401,31 @@ export default function DashboardPage() {
           return;
         }
 
-        // Still not found — create one (user may have skipped onboarding)
-        try {
-          const newId = await createPortfolio(supabase, user.id, 'My Portfolio');
-          await setCashBalance(supabase, newId, userProfile.investmentCapital);
-          setCashBalanceState(userProfile.investmentCapital);
-
-          const newPortfolio: Portfolio = {
-            id: newId,
-            userId: user.id,
-            name: 'My Portfolio',
-            createdAt: new Date().toISOString(),
-            status: 'active',
-          };
-          setPortfolio(newPortfolio);
-
-          const newPortfolioProb = computeGoalProbability({
-            cumulativeReturn: 0,
-            goalReturn: userProfile.goalReturnPct,
-            monthsRemaining: userProfile.timeHorizonMonths,
-            positionCount: 0,
-            maxPositions: userProfile.maxPositions,
-            riskProfile: userProfile.riskProfile,
-          });
-          await upsertPortfolioValuation(
-            supabase, newId,
-            userProfile.investmentCapital, userProfile.investmentCapital,
-            0, 0, newPortfolioProb
-          );
-          setValuations([{
-            portfolioId: newId,
-            date: new Date().toISOString().split('T')[0]!,
-            totalValue: userProfile.investmentCapital,
-            cashValue: userProfile.investmentCapital,
-            dailyPnl: 0,
-            cumulativeReturnPct: 0,
-            goalProbabilityPct: newPortfolioProb,
-          }]);
-        } catch {
-          // Portfolio may already exist
+        // Still not found after first retry — try two more times with longer delays.
+        // NEVER create a new portfolio here; that would orphan the real portfolio
+        // (with positions) that onboarding just created.
+        for (const delay of [1000, 2000]) {
+          await new Promise((r) => setTimeout(r, delay));
+          const portfolio3 = await getPortfolio(supabase, user.id);
+          if (portfolio3) {
+            setPortfolio(portfolio3);
+            const [pos, vals, recRun, dbCash] = await Promise.all([
+              getPortfolioPositions(supabase, portfolio3.id),
+              getPortfolioValuations(supabase, portfolio3.id, 30),
+              getLatestRecommendationRun(supabase, portfolio3.id),
+              getCashBalance(supabase, portfolio3.id),
+            ]);
+            setPositions(pos);
+            setRun(recRun);
+            setCashBalanceState(dbCash);
+            if (vals.length > 0) setValuations(vals);
+            setLoading(false);
+            return;
+          }
         }
+
+        // Portfolio truly not found — show empty state without creating a new one.
+        setCashBalanceState(userProfile.investmentCapital);
         setLoading(false);
         return;
       }
