@@ -487,6 +487,11 @@ export default function DashboardPage() {
         };
         const historical = vals.filter((v) => v.date !== today);
         setValuations([...historical, emptyVal]);
+
+        // Persist valuation so chart history starts accumulating from day one
+        upsertPortfolioValuation(
+          supabase, userPortfolio.id, emptyTotal, emptyTotal, 0, emptyCumReturn, emptyGoalProb
+        ).catch(() => {});
       } else {
         setValuations(vals);
       }
@@ -1043,7 +1048,7 @@ export default function DashboardPage() {
                     <>
                       <p className="text-sm text-gray-300 leading-relaxed">
                         {firstName ? `${firstName}, your` : 'Your'} portfolio has <span className="text-white font-medium">{positions.length} position{positions.length !== 1 ? 's' : ''}</span> with{' '}
-                        <span className="text-white font-medium">{formatCurrency(investedValue)}</span> invested
+                        <span className="text-white font-medium">{formatCurrency(investedValue)}</span> in market value
                         and <span className="text-white font-medium">{formatCurrency(cashValue)}</span> in cash.
                         {!isGuest && ' The AI analysis pipeline runs daily — your first briefing will appear after the next analysis cycle.'}
                       </p>

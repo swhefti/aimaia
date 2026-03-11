@@ -404,6 +404,8 @@ export default function OnboardingPage() {
   >([]);
   const [adjustedAllocation, setAdjustedAllocation] = useState(0);
   const [showRecommendations, setShowRecommendations] = useState(false);
+  const [approveSaving, setApproveSaving] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
   const portfolioIdRef = useRef<string | null>(null);
   const investedValueRef = useRef(0);
 
@@ -466,6 +468,17 @@ export default function OnboardingPage() {
         prices = await getAllLatestPrices(supabase);
       } catch (err) {
         console.error('Failed to load prices:', err);
+      }
+
+      // Verify auth session is active before DB writes
+      if (!isGuest) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          setCalcError('Your session has expired. Please log in again.');
+          setSaving(false);
+          setCalculating(false);
+          return;
+        }
       }
 
       // Create portfolio upfront so positions can be saved immediately on approve
@@ -531,7 +544,10 @@ export default function OnboardingPage() {
 
   async function handleApproveRec() {
     const rec = recommendations[currentRecIdx];
-    if (!rec || !user) return;
+    if (!rec || !user || approveSaving) return;
+
+    setApproveSaving(true);
+    setApproveError(null);
 
     const allocationPct = adjustedAllocation;
     const investAmount = capital * (allocationPct / 100);
@@ -553,8 +569,12 @@ export default function OnboardingPage() {
     } else if (portfolioIdRef.current) {
       try {
         await addPortfolioPosition(supabase, portfolioIdRef.current!, rec.ticker, quantity, rec.price);
+        console.log('Position saved:', rec.ticker);
       } catch (err) {
         console.error('Failed to save position:', err);
+        setApproveError(`Failed to save ${rec.ticker}. Please try again.`);
+        setApproveSaving(false);
+        return; // Don't advance — let the user retry
       }
     }
 
@@ -563,6 +583,7 @@ export default function OnboardingPage() {
       ...prev,
       { ticker: rec.ticker, allocationPct, price: rec.price },
     ]);
+    setApproveSaving(false);
     advanceToNext();
   }
 
@@ -1115,20 +1136,29 @@ export default function OnboardingPage() {
                   </div>
                 </div>
 
+                {/* Error message */}
+                {approveError && (
+                  <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-lg px-4 py-3">
+                    {approveError}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex gap-3 pt-2">
                   <Button
                     size="lg"
                     className="flex-1"
                     onClick={handleApproveRec}
+                    disabled={approveSaving}
                   >
-                    <Check className="h-4 w-4 mr-2" /> Approve
+                    {approveSaving ? 'Saving...' : <><Check className="h-4 w-4 mr-2" /> Approve</>}
                   </Button>
                   <Button
                     size="lg"
                     variant="ghost"
                     className="flex-1"
                     onClick={handleDismissRec}
+                    disabled={approveSaving}
                   >
                     Dismiss
                   </Button>

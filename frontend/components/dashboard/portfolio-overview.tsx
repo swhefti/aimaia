@@ -51,10 +51,8 @@ export function PortfolioOverview({
     value: v.totalValue,
   }));
 
-  // Calculate total return in dollars
-  const firstVal = valuations[0];
-  const latestTotal = latest?.totalValue ?? totalValue;
-  const returnDollars = firstVal ? latestTotal - firstVal.totalValue : 0;
+  // returnDollars derived consistently from returnPct and totalValue
+  const returnDollars = returnPct !== 0 ? totalValue - (totalValue / (1 + returnPct)) : 0;
 
   return (
     <Card padding="sm" className="overflow-hidden">
@@ -79,7 +77,7 @@ export function PortfolioOverview({
           </div>
           <div className="flex gap-5 text-xs">
             <div>
-              <p className="text-gray-500">Invested</p>
+              <p className="text-gray-500">Market Value</p>
               <p className="text-white font-medium">{formatCurrency(investedValue)}</p>
             </div>
             <div>
