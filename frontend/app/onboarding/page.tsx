@@ -394,7 +394,7 @@ export default function OnboardingPage() {
   const [recommendations, setRecommendations] = useState<PortfolioRecommendation[]>([]);
   const [currentRecIdx, setCurrentRecIdx] = useState(0);
   const [approvedPositions, setApprovedPositions] = useState<
-    { ticker: string; allocationPct: number; price: number; quantity?: number }[]
+    { ticker: string; allocationPct: number; price: number; quantity: number }[]
   >([]);
   const [adjustedAllocation, setAdjustedAllocation] = useState(0);
   const [showRecommendations, setShowRecommendations] = useState(false);
@@ -402,6 +402,7 @@ export default function OnboardingPage() {
   const [approveError, setApproveError] = useState<string | null>(null);
   const portfolioIdRef = useRef<string | null>(null);
   const investedValueRef = useRef(0);
+  const approvedPositionsRef = useRef<{ ticker: string; allocationPct: number; price: number; quantity: number }[]>([]);
 
   const riskProfile = deriveRiskProfile(returnGoalPct, maxReturnPct);
 
@@ -543,6 +544,12 @@ export default function OnboardingPage() {
     setApproveSaving(true);
     setApproveError(null);
 
+    if (!rec.price || rec.price <= 0) {
+      setApproveError(`No price available for ${rec.ticker}. Please dismiss and continue.`);
+      setApproveSaving(false);
+      return;
+    }
+
     const allocationPct = adjustedAllocation;
     const investAmount = capital * (allocationPct / 100);
     const quantity = investAmount / rec.price;
@@ -563,11 +570,10 @@ export default function OnboardingPage() {
     }
     // For real users, positions are batched and saved in finishOnboarding
 
+    const newPosition = { ticker: rec.ticker, allocationPct, price: rec.price, quantity };
     investedValueRef.current += investAmount;
-    setApprovedPositions((prev) => [
-      ...prev,
-      { ticker: rec.ticker, allocationPct, price: rec.price, quantity },
-    ]);
+    approvedPositionsRef.current = [...approvedPositionsRef.current, newPosition];
+    setApprovedPositions((prev) => [...prev, newPosition]);
     setApproveSaving(false);
     advanceToNext();
   }
@@ -594,12 +600,12 @@ export default function OnboardingPage() {
     try {
       if (!isGuest && portfolioIdRef.current) {
         // Save all approved positions via API route (uses service role, bypasses RLS)
-        if (approvedPositions.length > 0) {
-          const positionsPayload = approvedPositions
-            .filter((p) => p.quantity && p.quantity > 0)
+        if (approvedPositionsRef.current.length > 0) {
+          const positionsPayload = approvedPositionsRef.current
+            .filter((p) => p.quantity > 0)
             .map((p) => ({
               ticker: p.ticker,
-              quantity: p.quantity!,
+              quantity: p.quantity,
               avgPurchasePrice: p.price,
             }));
 
@@ -641,7 +647,7 @@ export default function OnboardingPage() {
           cumulativeReturn: 0,
           goalReturn: returnGoalPct / 100,
           monthsRemaining: horizonMonths,
-          positionCount: approvedPositions.length,
+          positionCount: approvedPositionsRef.current.length,
           maxPositions,
           riskProfile,
         });
