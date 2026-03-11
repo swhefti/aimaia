@@ -725,6 +725,7 @@ export default function DashboardPage() {
 
     let updatedPositions = [...positions];
     const existingIdx = updatedPositions.findIndex((p) => p.ticker === item.ticker);
+    let newCash = cashBalance;
 
     if (item.action === 'BUY' || item.action === 'ADD') {
       // Calculate how much to invest based on target allocation (less fees)
@@ -736,6 +737,14 @@ export default function DashboardPage() {
       const quantity = investAmount / currentPrice;
 
       if (quantity > 0) {
+        // Deduct cost from cash
+        const cost = quantity * currentPrice;
+        if (cashBalance != null) {
+          newCash = Math.max(0, cashBalance - cost);
+          setCashBalanceState(newCash);
+          setCashBalance(supabase, portfolio.id, newCash).catch(() => {});
+        }
+
         if (existingIdx >= 0) {
           // ADD to existing position — update average price and quantity
           const existing = updatedPositions[existingIdx]!;
@@ -774,18 +783,32 @@ export default function DashboardPage() {
         } catch { /* Non-blocking */ }
       }
     } else if (item.action === 'SELL') {
-      // Remove the entire position
+      // Remove the entire position — add proceeds to cash
       if (existingIdx >= 0) {
         const existing = updatedPositions[existingIdx]!;
+        const proceeds = existing.quantity * currentPrice;
+        if (cashBalance != null) {
+          newCash = cashBalance + proceeds;
+          setCashBalanceState(newCash);
+          setCashBalance(supabase, portfolio.id, newCash).catch(() => {});
+        }
         await removePortfolioPosition(supabase, existing.id);
         updatedPositions = updatedPositions.filter((_, i) => i !== existingIdx);
       }
     } else if (item.action === 'REDUCE') {
-      // Reduce position to target allocation
+      // Reduce position to target allocation — add freed value to cash
       if (existingIdx >= 0) {
         const existing = updatedPositions[existingIdx]!;
         const targetValue = (item.targetAllocationPct / 100) * totalValue;
         const newQuantity = Math.max(0, targetValue / currentPrice);
+        const soldQuantity = existing.quantity - newQuantity;
+        const proceeds = soldQuantity * currentPrice;
+
+        if (cashBalance != null && proceeds > 0) {
+          newCash = cashBalance + proceeds;
+          setCashBalanceState(newCash);
+          setCashBalance(supabase, portfolio.id, newCash).catch(() => {});
+        }
 
         if (newQuantity <= 0) {
           // Fully sell
@@ -801,7 +824,7 @@ export default function DashboardPage() {
 
     setPositions(updatedPositions);
     setItems((prev) => prev.filter((i) => i.id !== id));
-    await recalculate(updatedPositions, profile, portfolio.id);
+    await recalculate(updatedPositions, profile, portfolio.id, newCash);
     } catch (err) {
       console.error('Approve error:', err);
     }
