@@ -42,6 +42,7 @@ export async function buildContextPackage(
     assetTypes: profileData.asset_types as UserProfile['assetTypes'],
     maxPositions: Number(profileData.max_positions),
     rebalancingPreference: (profileData.rebalancing_preference as UserProfile['rebalancingPreference']) ?? 'daily',
+    onboardingCompletedAt: (profileData.onboarding_completed_at as string) ?? null,
   };
 
   // 2. Load portfolio positions with current prices

@@ -19,6 +19,7 @@ export interface UserProfile {
   assetTypes: AssetType[];         // which asset classes the user allows
   maxPositions: number;
   rebalancingPreference: RebalancingPreference;
+  onboardingCompletedAt: string | null;
 }
 
 export interface Portfolio {

@@ -35,7 +35,7 @@ export async function getUserProfile(supabase: SupabaseClient, userId: string): 
 export async function upsertUserProfile(
   supabase: SupabaseClient,
   userId: string,
-  profile: Omit<UserProfile, 'userId'>
+  profile: Omit<UserProfile, 'userId' | 'onboardingCompletedAt'>
 ): Promise<void> {
   // DB CHECK constraint on max_drawdown_limit_pct requires value > 1 (stored as percentage)
   // Frontend uses decimal (0.15 for 15%), so convert if needed
@@ -1073,6 +1073,7 @@ function mapUserProfile(row: Record<string, unknown>): UserProfile {
     assetTypes: row.asset_types as UserProfile['assetTypes'],
     maxPositions: row.max_positions as number,
     rebalancingPreference: (row.rebalancing_preference as UserProfile['rebalancingPreference']) ?? 'daily',
+    onboardingCompletedAt: (row.onboarding_completed_at as string) ?? null,
   };
 }
 

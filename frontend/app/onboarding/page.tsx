@@ -440,6 +440,7 @@ export default function OnboardingPage() {
         sessionStorage.setItem('guest_profile', JSON.stringify({
           userId: 'guest-local',
           ...profileData,
+          onboardingCompletedAt: new Date().toISOString(),
         }));
       } else {
         // Save profile — required before portfolio creation (FK constraint)

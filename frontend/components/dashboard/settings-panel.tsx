@@ -76,7 +76,7 @@ export function SettingsPanel({ profile, onProfileUpdated }: SettingsPanelProps)
     try {
       const goalDecimal = returnGoalPct / 100;
       const riskProfile = deriveRiskProfile(goalDecimal);
-      const updated: Omit<UserProfile, 'userId'> = {
+      const updated: Omit<UserProfile, 'userId' | 'onboardingCompletedAt'> = {
         investmentCapital: effectiveCapital,
         timeHorizonMonths: horizonMonths,
         riskProfile,
@@ -90,7 +90,7 @@ export function SettingsPanel({ profile, onProfileUpdated }: SettingsPanelProps)
       if (!isGuest) {
         await upsertUserProfile(supabase, user.id, updated);
       }
-      onProfileUpdated({ userId: user.id, ...updated });
+      onProfileUpdated({ userId: user.id, ...updated, onboardingCompletedAt: profile.onboardingCompletedAt });
       setOpen(false);
     } catch (err) {
       console.error('Settings save error:', err);

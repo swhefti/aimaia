@@ -51,6 +51,7 @@ export async function runSynthesisForPortfolio(
       assetTypes: profileData.asset_types as ('stock' | 'etf' | 'crypto')[],
       maxPositions: Number(profileData.max_positions),
       rebalancingPreference: (profileData.rebalancing_preference as 'daily' | 'weekly' | 'monthly') ?? 'daily',
+      onboardingCompletedAt: (profileData.onboarding_completed_at as string) ?? null,
     };
 
     // Build portfolio state for rules engine

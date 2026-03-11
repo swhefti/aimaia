@@ -76,6 +76,7 @@ function LoginPageInner() {
       assetTypes: ['stock', 'etf', 'crypto'],
       maxPositions: 10,
       rebalancingPreference: 'daily' as const,
+      onboardingCompletedAt: new Date().toISOString(),
     }
     sessionStorage.setItem('guest_profile', JSON.stringify(simProfile))
 
