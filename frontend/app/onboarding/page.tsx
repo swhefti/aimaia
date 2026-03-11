@@ -20,13 +20,16 @@ import { formatCurrency, computeGoalProbability } from '@/lib/formatters';
 import { ASSET_TYPE_MAP, ASSET_UNIVERSE, CASH_FLOOR_PCT, MAX_POSITION_PCT } from '@shared/lib/constants';
 import type { RiskProfile, VolatilityTolerance } from '@shared/types/portfolio';
 import type { AssetType } from '@shared/types/assets';
-import { X, Check, ChevronRight } from 'lucide-react';
+import {
+  X, Check, ChevronRight, Wallet, Clock, Target, Shield,
+  BarChart3, Factory, Layers, Sparkles,
+} from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const STEPS = ['Investment Capital', 'Time Horizon', 'Return Goal', 'Risk Tolerance', 'Asset Types', 'Industries', 'Portfolio Size'];
+const STEPS = ['Welcome', 'Investment Capital', 'Time Horizon', 'Return Goal', 'Risk Tolerance', 'Asset Types', 'Industries', 'Portfolio Size'];
 
 const INDUSTRIES = [
   { id: 'technology', label: 'Technology', tickers: ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'AVGO', 'ADBE', 'CRM', 'NFLX', 'AMD', 'QCOM', 'TXN', 'INTC', 'IBM', 'NOW', 'SNOW', 'PLTR', 'SHOP', 'XLK'] },
@@ -45,18 +48,14 @@ const INDUSTRIES = [
   { id: 'broad_market', label: 'Broad Market ETFs', tickers: ['SPY', 'QQQ', 'IWM', 'VTI', 'VOO', 'ARKK', 'SCHD'] },
 ] as const;
 
-const HORIZON_STEPS = [
-  { label: '1 month', months: 1 },
-  { label: '2 months', months: 2 },
-  { label: '3 months', months: 3 },
-  { label: '6 months', months: 6 },
-  { label: '9 months', months: 9 },
-  { label: '1 year', months: 12 },
-  { label: '2 years', months: 24 },
-  { label: '3 years', months: 36 },
-  { label: '4 years', months: 48 },
-  { label: '5+ years', months: 60 },
-];
+function formatHorizon(months: number): string {
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'}`;
+  const years = Math.floor(months / 12);
+  const rem = months % 12;
+  const yLabel = `${years} year${years === 1 ? '' : 's'}`;
+  if (rem === 0) return yLabel;
+  return `${yLabel}, ${rem} mo`;
+}
 
 /** Max total return % (as integer) keyed by horizon months */
 function getMaxReturnPct(months: number): number {
@@ -360,12 +359,11 @@ export default function OnboardingPage() {
   const [capital, setCapital] = useState(10000);
 
   // Step 2: Horizon
-  const [horizonIdx, setHorizonIdx] = useState(5); // default: 1 year
-  const horizonMonths = HORIZON_STEPS[horizonIdx]!.months;
+  const [horizonMonths, setHorizonMonths] = useState(12); // default: 1 year
 
   // Step 3: Return Goal
   const maxReturnPct = getMaxReturnPct(horizonMonths);
-  const [returnGoalPct, setReturnGoalPct] = useState(Math.round(maxReturnPct / 3));
+  const [returnGoalPct, setReturnGoalPct] = useState(Math.round((maxReturnPct / 3) * 10) / 10);
   const segments = getReturnSegments(maxReturnPct);
   const activeSegment = getSegmentForReturn(returnGoalPct, segments);
   const annualized = annualizedReturn(returnGoalPct, horizonMonths);
@@ -654,29 +652,80 @@ export default function OnboardingPage() {
       <div className="w-full max-w-lg">
         {!showRecommendations ? (
           <>
-            {/* Progress */}
-            <div className="mb-8">
-              <div className="flex justify-between text-sm text-gray-400 mb-2">
-                <span>Step {step + 1} of {STEPS.length}</span>
-                <span>{STEPS[step]}</span>
+            {/* Progress — hidden on welcome step */}
+            {step > 0 && (
+              <div className="mb-8">
+                <div className="flex justify-between text-sm text-gray-400 mb-2">
+                  <span>Step {step} of {STEPS.length - 1}</span>
+                  <span>{STEPS[step]}</span>
+                </div>
+                <div className="w-full h-1.5 bg-navy-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-accent-blue rounded-full transition-all duration-300"
+                    style={{ width: `${(step / (STEPS.length - 1)) * 100}%` }}
+                  />
+                </div>
               </div>
-              <div className="w-full h-1.5 bg-navy-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-accent-blue rounded-full transition-all duration-300"
-                  style={{ width: `${((step + 1) / STEPS.length) * 100}%` }}
-                />
-              </div>
-            </div>
+            )}
 
+            {/* Step 0: Welcome */}
+            {step === 0 && (
+              <Card padding="lg">
+                <div className="space-y-6 text-center py-4">
+                  <Sparkles className="h-12 w-12 text-accent-blue mx-auto" />
+                  <div>
+                    <h1 className="text-2xl font-bold text-white">
+                      Welcome{user?.user_metadata?.full_name ? `, ${user.user_metadata.full_name.split(' ')[0]}` : ''}!
+                    </h1>
+                    <p className="text-gray-400 mt-3 leading-relaxed max-w-md mx-auto">
+                      MAIPA is your AI-powered portfolio advisor. It analyzes 100 assets daily — stocks, ETFs, and crypto — and delivers personalized recommendations based on your goals and risk tolerance.
+                    </p>
+                    <p className="text-gray-500 text-sm mt-2">
+                      Answer a few quick questions so we can build your ideal portfolio.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-4 pt-2">
+                    <Button size="lg" onClick={() => setStep(1)}>
+                      Build Portfolio <ChevronRight className="h-4 w-4 ml-1" />
+                    </Button>
+                    <button
+                      onClick={() => {
+                        // Mark onboarding as completed and go to dashboard without positions
+                        if (!isGuest && user) {
+                          supabase.from('user_profiles')
+                            .upsert({
+                              user_id: user.id,
+                              onboarding_completed_at: new Date().toISOString(),
+                              investment_capital: 10000,
+                              time_horizon_months: 12,
+                              risk_profile: 'balanced',
+                              goal_return_pct: 0.07,
+                              max_drawdown_limit_pct: 15,
+                              volatility_tolerance: 'balanced',
+                              max_positions: 8,
+                            }, { onConflict: 'user_id' })
+                            .then(() => router.push('/dashboard'));
+                        } else {
+                          router.push('/dashboard');
+                        }
+                      }}
+                      className="text-sm text-gray-400 hover:text-gray-300 transition-colors underline underline-offset-2"
+                    >
+                      Skip
+                    </button>
+                  </div>
+                </div>
+              </Card>
+            )}
+
+            {step > 0 && (
             <Card padding="lg">
               {/* Step 1: Investment Capital */}
-              {step === 0 && (
+              {step === 1 && (
                 <div className="space-y-6">
-                  <div>
+                  <div className="flex items-center gap-3">
+                    <Wallet className="h-6 w-6 text-accent-blue shrink-0" />
                     <h2 className="text-xl font-semibold text-white">How much are you investing?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Drag the slider to set your total investment capital.
-                    </p>
                   </div>
                   <div className="text-center">
                     <span className="text-4xl font-bold text-white">{formatCurrency(capital)}</span>
@@ -701,49 +750,55 @@ export default function OnboardingPage() {
               )}
 
               {/* Step 2: Time Horizon */}
-              {step === 1 && (
+              {step === 2 && (
                 <div className="space-y-6">
-                  <div>
-                    <h2 className="text-xl font-semibold text-white">What&apos;s your investment horizon?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      How long do you plan to keep this portfolio active?
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <Clock className="h-6 w-6 text-accent-blue shrink-0" />
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">What&apos;s your investment horizon?</h2>
+                      <p className="text-sm text-gray-400 mt-1">
+                        How long do you plan to keep this portfolio active?
+                      </p>
+                    </div>
                   </div>
                   <div className="text-center">
                     <span className="text-3xl font-bold text-white">
-                      {HORIZON_STEPS[horizonIdx]!.label}
+                      {formatHorizon(horizonMonths)}
                     </span>
                   </div>
                   <div className="space-y-2">
                     <input
                       type="range"
-                      min={0}
-                      max={HORIZON_STEPS.length - 1}
+                      min={1}
+                      max={60}
                       step={1}
-                      value={horizonIdx}
-                      onChange={(e) => setHorizonIdx(Number(e.target.value))}
+                      value={horizonMonths}
+                      onChange={(e) => setHorizonMonths(Number(e.target.value))}
                       className="w-full accent-accent-blue"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>1 month</span>
-                      <span>5+ years</span>
+                      <span>5 years</span>
                     </div>
                   </div>
                 </div>
               )}
 
               {/* Step 3: Return Goal */}
-              {step === 2 && (
+              {step === 3 && (
                 <div className="space-y-6">
-                  <div>
-                    <h2 className="text-xl font-semibold text-white">What&apos;s your return goal?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Total return on invested capital over your {HORIZON_STEPS[horizonIdx]!.label} horizon.
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <Target className="h-6 w-6 text-accent-blue shrink-0" />
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">What&apos;s your return goal?</h2>
+                      <p className="text-sm text-gray-400 mt-1">
+                        Total return on invested capital over your {formatHorizon(horizonMonths)} horizon.
+                      </p>
+                    </div>
                   </div>
                   <div className="text-center">
                     <span className="text-4xl font-bold text-white">
-                      {returnGoalPct >= maxReturnPct ? `${returnGoalPct}%+` : `${returnGoalPct}%`}
+                      {returnGoalPct >= maxReturnPct ? `${returnGoalPct.toFixed(1)}%+` : `${returnGoalPct.toFixed(1)}%`}
                     </span>
                     <span className="text-sm text-gray-400 ml-2">
                       ({annualized.toFixed(1)}% annualized)
@@ -752,15 +807,15 @@ export default function OnboardingPage() {
                   <div className="space-y-2">
                     <input
                       type="range"
-                      min={1}
+                      min={0.5}
                       max={maxReturnPct}
-                      step={1}
+                      step={0.1}
                       value={returnGoalPct}
                       onChange={(e) => setReturnGoalPct(Number(e.target.value))}
                       className="w-full accent-accent-blue"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
-                      <span>1%</span>
+                      <span>0.5%</span>
                       <span>{maxReturnPct}%+</span>
                     </div>
                   </div>
@@ -789,13 +844,16 @@ export default function OnboardingPage() {
               )}
 
               {/* Step 4: Risk Tolerance */}
-              {step === 3 && (
+              {step === 4 && (
                 <div className="space-y-6">
-                  <div>
-                    <h2 className="text-xl font-semibold text-white">How much risk can you handle?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      This helps us calibrate position sizing and asset selection.
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <Shield className="h-6 w-6 text-accent-blue shrink-0" />
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">How much risk can you handle?</h2>
+                      <p className="text-sm text-gray-400 mt-1">
+                        This helps us calibrate position sizing and asset selection.
+                      </p>
+                    </div>
                   </div>
 
                   {/* Volatility */}
@@ -862,13 +920,16 @@ export default function OnboardingPage() {
               )}
 
               {/* Step 5: Asset Types */}
-              {step === 4 && (
+              {step === 5 && (
                 <div className="space-y-6">
-                  <div>
-                    <h2 className="text-xl font-semibold text-white">What do you want to invest in?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Select which asset types to include in your portfolio.
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <BarChart3 className="h-6 w-6 text-accent-blue shrink-0" />
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">What do you want to invest in?</h2>
+                      <p className="text-sm text-gray-400 mt-1">
+                        Select which asset types to include in your portfolio.
+                      </p>
+                    </div>
                   </div>
                   <div className="space-y-2">
                     {([
@@ -911,13 +972,16 @@ export default function OnboardingPage() {
               )}
 
               {/* Step 6: Industries */}
-              {step === 5 && (
+              {step === 6 && (
                 <div className="space-y-6">
-                  <div>
-                    <h2 className="text-xl font-semibold text-white">Which industries interest you?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Pick the sectors you want the AI to consider. You can select multiple.
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <Factory className="h-6 w-6 text-accent-blue shrink-0" />
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">Which industries interest you?</h2>
+                      <p className="text-sm text-gray-400 mt-1">
+                        Pick the sectors you want the AI to consider. You can select multiple.
+                      </p>
+                    </div>
                   </div>
                   <div className="flex gap-2 mb-2">
                     <button
@@ -975,13 +1039,16 @@ export default function OnboardingPage() {
               )}
 
               {/* Step 7: Portfolio Size */}
-              {step === 6 && (
+              {step === 7 && (
                 <div className="space-y-6">
-                  <div>
-                    <h2 className="text-xl font-semibold text-white">How many positions?</h2>
-                    <p className="text-sm text-gray-400 mt-1">
-                      More positions means broader diversification, but smaller individual allocations.
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <Layers className="h-6 w-6 text-accent-blue shrink-0" />
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">How many positions?</h2>
+                      <p className="text-sm text-gray-400 mt-1">
+                        More positions means broader diversification, but smaller individual allocations.
+                      </p>
+                    </div>
                   </div>
                   <div className="text-center">
                     <span className="text-4xl font-bold text-white">{maxPositions}</span>
@@ -1017,14 +1084,14 @@ export default function OnboardingPage() {
                 <Button
                   variant="ghost"
                   onClick={() => setStep((s) => s - 1)}
-                  disabled={step === 0}
+                  disabled={step <= 1}
                 >
                   Back
                 </Button>
                 {step < STEPS.length - 1 ? (
                   <Button
                     onClick={() => setStep((s) => s + 1)}
-                    disabled={(step === 4 && assetTypes.length === 0) || (step === 5 && selectedIndustries.length === 0)}
+                    disabled={(step === 5 && assetTypes.length === 0) || (step === 6 && selectedIndustries.length === 0)}
                   >
                     Next <ChevronRight className="h-4 w-4 ml-1" />
                   </Button>
@@ -1035,6 +1102,7 @@ export default function OnboardingPage() {
                 )}
               </div>
             </Card>
+            )}
           </>
         ) : calculating && !currentRec ? (
           <div className="flex flex-col items-center gap-4 py-16">
