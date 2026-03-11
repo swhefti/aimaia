@@ -22,6 +22,9 @@ import {
 import type { AgentScore } from '@shared/types/scores';
 import type { TickerQuote, TickerFundamental, TickerNewsItem, TickerConclusion } from '@/lib/queries';
 import { ASSET_TYPE_MAP, getWeightsForTicker } from '@shared/lib/constants';
+
+type AgentWeights = { technical: number; sentiment: number; fundamental: number; regime: number };
+type WeightsConfig = { stock: AgentWeights; crypto: AgentWeights; cryptoSentimentMissing: AgentWeights } | null;
 import { TrendingUp, TrendingDown, ExternalLink, ShoppingCart, RefreshCw } from 'lucide-react';
 
 export interface TickerDetailModalProps {
@@ -102,6 +105,9 @@ export function TickerDetailModal({
   // Fundamental breakdown
   const [showFundBreakdown, setShowFundBreakdown] = useState(false);
 
+  // Dynamic weights from system_config
+  const [weightsConfig, setWeightsConfig] = useState<WeightsConfig>(null);
+
   // Dev refresh
   const [refreshing, setRefreshing] = useState(false);
   const [refreshStatus, setRefreshStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -142,6 +148,16 @@ export function TickerDetailModal({
       .catch(() => {})
       .finally(() => setLoadingData(false));
 
+    // Fetch dynamic weights (cached, fire-and-forget)
+    if (!weightsConfig) {
+      fetch('/api/config/weights')
+        .then((r) => r.json())
+        .then((d: { stock: AgentWeights; crypto: AgentWeights; cryptoSentimentMissing: AgentWeights }) =>
+          setWeightsConfig(d),
+        )
+        .catch(() => {});
+    }
+
     // Fetch price history in parallel
     fetch(`/api/ticker/price-history?ticker=${encodeURIComponent(ticker)}&days=90`)
       .then((res) => res.json())
@@ -170,7 +186,14 @@ export function TickerDetailModal({
 
   const compositeScore = scores.length > 0
     ? (() => {
-        const w = getWeightsForTicker(ticker, sentimentMissing);
+        let w: AgentWeights;
+        if (weightsConfig) {
+          if (sentimentMissing) w = weightsConfig.cryptoSentimentMissing;
+          else if (isCrypto) w = weightsConfig.crypto;
+          else w = weightsConfig.stock;
+        } else {
+          w = getWeightsForTicker(ticker, sentimentMissing);
+        }
         const tech = scores.find((s) => s.agentType === 'technical')?.score ?? 0;
         const sent = sentimentScore?.score ?? 0;
         const fund = scores.find((s) => s.agentType === 'fundamental')?.score ?? 0;

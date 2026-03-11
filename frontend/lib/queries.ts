@@ -842,17 +842,37 @@ export async function getAllAgentScoresGrouped(
   supabase: SupabaseClient,
   asOfDate?: string
 ): Promise<Record<string, AgentScore[]>> {
-  // Find the latest date that has technical scores (full pipeline run)
-  let dateQuery = supabase
+  // Find the latest date with a full pipeline run (many technical scores).
+  // A single-ticker refresh may create a few scores on today's date, but that
+  // should not shadow the last bulk run. We look at recent dates and pick the
+  // most recent one with >= 10 technical scores.
+  const MIN_FULL_RUN = 10;
+
+  let recentDatesQuery = supabase
     .from('agent_scores')
     .select('date')
     .eq('agent_type', 'technical')
     .order('date', { ascending: false })
-    .limit(1);
-  if (asOfDate) dateQuery = dateQuery.lte('date', asOfDate);
+    .limit(500); // enough to span several recent dates
+  if (asOfDate) recentDatesQuery = recentDatesQuery.lte('date', asOfDate);
 
-  const { data: latestRow } = await dateQuery;
-  let baseDate = latestRow?.[0]?.date as string | undefined;
+  const { data: recentRows } = await recentDatesQuery;
+  let baseDate: string | undefined;
+
+  if (recentRows && recentRows.length > 0) {
+    // Count technical scores per date
+    const counts: Record<string, number> = {};
+    for (const row of recentRows) {
+      const d = row.date as string;
+      counts[d] = (counts[d] || 0) + 1;
+    }
+    // Pick the most recent date with enough scores (full pipeline)
+    const sortedDates = Object.keys(counts).sort((a, b) => b.localeCompare(a));
+    baseDate = sortedDates.find((d) => counts[d]! >= MIN_FULL_RUN);
+    // Fallback: if no date has enough scores, use the most recent
+    if (!baseDate) baseDate = sortedDates[0];
+  }
+
   if (!baseDate) {
     // Fallback: any scores at all
     let fallbackQuery = supabase

@@ -44,6 +44,11 @@ interface CronConfig {
   subweightRsi: number;
   subweightBollinger: number;
   subweightVolume: number;
+  subweightPe: number;
+  subweightRevenue: number;
+  subweightMargin: number;
+  subweightRoe: number;
+  subweightDebt: number;
 }
 
 // ---- Score upsert helper ----
@@ -232,7 +237,7 @@ const SECTOR_MEDIAN_PE: Record<string, number> = {
   utilities: 18, 'communication services': 20, 'basic materials': 15, default: 20,
 };
 
-async function runFundamental(supabase: SB, ticker: string, dateStr: string): Promise<string> {
+async function runFundamental(supabase: SB, ticker: string, dateStr: string, cfg: CronConfig): Promise<string> {
   const assetType = ASSET_TYPE_MAP[ticker];
   if (assetType === 'crypto') {
     await upsertScore(supabase, ticker, dateStr, 'fundamental', 0, 0.1, {}, 'Not applicable to crypto', 'missing');
@@ -268,7 +273,7 @@ async function runFundamental(supabase: SB, ticker: string, dateStr: string): Pr
   const roeScore = roe === null ? 0 : roe > 0.2 ? 0.3 : roe > 0.1 ? 0.1 : roe >= 0 ? 0 : -0.4;
   const debtScore = debt === null ? 0 : debt > 3 ? -0.3 : debt > 1 ? -0.1 : 0.1;
 
-  const score = clamp(peScore * 0.25 + revScore * 0.25 + marginScore * 0.15 + roeScore * 0.2 + debtScore * 0.15, -1, 1);
+  const score = clamp(peScore * cfg.subweightPe + revScore * cfg.subweightRevenue + marginScore * cfg.subweightMargin + roeScore * cfg.subweightRoe + debtScore * cfg.subweightDebt, -1, 1);
   const available = [pe, rev, margin, roe, debt].filter((v) => v !== null).length;
   const daysDiff = Math.floor((new Date(dateStr).getTime() - new Date(fundData.date as string).getTime()) / 86400000);
   const freshness = daysDiff > 90 ? 'stale' : 'current';
@@ -583,6 +588,11 @@ export async function GET(req: NextRequest) {
       subweight_technical_rsi: 0.20,
       subweight_technical_bollinger: 0.15,
       subweight_technical_volume: 0.10,
+      subweight_fundamental_pe: 0.25,
+      subweight_fundamental_revenue: 0.25,
+      subweight_fundamental_margin: 0.15,
+      subweight_fundamental_roe: 0.20,
+      subweight_fundamental_debt: 0.15,
     }),
   ]);
 
@@ -604,6 +614,11 @@ export async function GET(req: NextRequest) {
     subweightRsi: cfgNumbers['subweight_technical_rsi']!,
     subweightBollinger: cfgNumbers['subweight_technical_bollinger']!,
     subweightVolume: cfgNumbers['subweight_technical_volume']!,
+    subweightPe: cfgNumbers['subweight_fundamental_pe']!,
+    subweightRevenue: cfgNumbers['subweight_fundamental_revenue']!,
+    subweightMargin: cfgNumbers['subweight_fundamental_margin']!,
+    subweightRoe: cfgNumbers['subweight_fundamental_roe']!,
+    subweightDebt: cfgNumbers['subweight_fundamental_debt']!,
   };
 
   const scoreResults: Record<string, { technical: string; sentiment: string; fundamental: string }> = {};
@@ -618,7 +633,7 @@ export async function GET(req: NextRequest) {
         const results = { technical: '', sentiment: '', fundamental: '' };
         try { results.technical = await runTechnical(supabase, ticker, dateStr, cronCfg); } catch (e) { results.technical = `error: ${e instanceof Error ? e.message : e}`; }
         try { results.sentiment = await runSentiment(supabase, ticker, dateStr, anthropic, cronCfg); } catch (e) { results.sentiment = `error: ${e instanceof Error ? e.message : e}`; }
-        try { results.fundamental = await runFundamental(supabase, ticker, dateStr); } catch (e) { results.fundamental = `error: ${e instanceof Error ? e.message : e}`; }
+        try { results.fundamental = await runFundamental(supabase, ticker, dateStr, cronCfg); } catch (e) { results.fundamental = `error: ${e instanceof Error ? e.message : e}`; }
         scoreResults[ticker] = results;
 
         const ok = Object.values(results).every((v) => v.startsWith('ok') || v.startsWith('n/a') || v.startsWith('baseline') || v.startsWith('missing') || v.startsWith('decayed'));

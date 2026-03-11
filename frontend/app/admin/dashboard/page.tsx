@@ -12,17 +12,148 @@ interface ConfigItem {
   updated_at: string;
 }
 
-const GROUP_LABELS: Record<string, string> = {
-  models: 'Models',
-  prompts: 'Prompts',
-  scoring_weights: 'Scoring Weights',
-  technical_sub_weights: 'Technical Sub-weights',
-  output_limits: 'Output Limits',
-  data_windows: 'Data Windows',
-  probability_math: 'Probability Math',
-};
+/* ──────────────────────────────────────────────
+ * Feature-based grouping (overrides DB group_name)
+ * Key → feature group mapping
+ * ──────────────────────────────────────────────*/
 
-const GROUP_ORDER = ['models', 'prompts', 'scoring_weights', 'technical_sub_weights', 'output_limits', 'data_windows', 'probability_math'];
+const FEATURE_GROUPS: { id: string; label: string; keys: string[]; weightKeys?: string[] }[] = [
+  {
+    id: 'sentiment',
+    label: 'Sentiment Agent',
+    keys: [
+      'model_sentiment',
+      'model_sentiment_filter',
+      'prompt_sentiment',
+      'prompt_sentiment_filter',
+      'max_tokens_sentiment',
+      'sentiment_lookback_days',
+      'sentiment_min_articles_crypto',
+      'sentiment_decay_factor',
+    ],
+  },
+  {
+    id: 'technical',
+    label: 'Technical Agent',
+    keys: [
+      'technical_lookback_days',
+      'technical_min_rows_confidence_high',
+      'technical_min_rows_confidence_low',
+      'subweight_technical_macd',
+      'subweight_technical_ema',
+      'subweight_technical_rsi',
+      'subweight_technical_bollinger',
+      'subweight_technical_volume',
+    ],
+    weightKeys: [
+      'subweight_technical_macd',
+      'subweight_technical_ema',
+      'subweight_technical_rsi',
+      'subweight_technical_bollinger',
+      'subweight_technical_volume',
+    ],
+  },
+  {
+    id: 'fundamental',
+    label: 'Fundamental Agent',
+    keys: [
+      'subweight_fundamental_pe',
+      'subweight_fundamental_revenue',
+      'subweight_fundamental_margin',
+      'subweight_fundamental_roe',
+      'subweight_fundamental_debt',
+    ],
+    weightKeys: [
+      'subweight_fundamental_pe',
+      'subweight_fundamental_revenue',
+      'subweight_fundamental_margin',
+      'subweight_fundamental_roe',
+      'subweight_fundamental_debt',
+    ],
+  },
+  {
+    id: 'conclusion',
+    label: 'Conclusion Agent',
+    keys: [
+      'model_conclusion',
+      'prompt_conclusion',
+      'max_tokens_conclusion',
+      'max_chars_conclusion',
+    ],
+  },
+  {
+    id: 'synthesis',
+    label: 'Synthesis / Briefing',
+    keys: [
+      'model_synthesis',
+      'prompt_synthesis_system',
+      'max_tokens_synthesis',
+      'max_chars_synthesis_narrative',
+    ],
+  },
+  {
+    id: 'ai_probability',
+    label: 'AI Probability',
+    keys: [
+      'model_ai_probability_opus',
+      'model_ai_probability_sonnet',
+      'prompt_ai_probability',
+      'max_tokens_ai_probability',
+      'prob_sigmoid_steepness',
+      'prob_sigmoid_midpoint',
+      'prob_ai_score_weight',
+      'prob_progress_bonus_max',
+      'prob_diversification_bonus_max',
+      'prob_time_bonus_max',
+      'prob_no_positions_cap',
+    ],
+  },
+  {
+    id: 'risk_report',
+    label: 'Risk Report',
+    keys: [
+      'model_risk_report',
+      'prompt_risk_report',
+      'max_tokens_risk_report',
+    ],
+  },
+  {
+    id: 'composite_weights',
+    label: 'Composite Weights',
+    keys: [
+      'weight_stock_technical',
+      'weight_stock_sentiment',
+      'weight_stock_fundamental',
+      'weight_stock_regime',
+      'weight_crypto_technical',
+      'weight_crypto_sentiment',
+      'weight_crypto_fundamental',
+      'weight_crypto_regime',
+      'weight_crypto_sentiment_missing_technical',
+      'weight_crypto_sentiment_missing_regime',
+    ],
+    // Multiple sub-groups that each must sum to 1.0
+    weightKeys: [
+      'weight_stock_technical',
+      'weight_stock_sentiment',
+      'weight_stock_fundamental',
+      'weight_stock_regime',
+    ],
+  },
+];
+
+// Build a reverse lookup: key → feature group id
+const KEY_TO_FEATURE: Record<string, string> = {};
+for (const group of FEATURE_GROUPS) {
+  for (const key of group.keys) {
+    KEY_TO_FEATURE[key] = group.id;
+  }
+}
+
+const FEATURE_ORDER = FEATURE_GROUPS.map((g) => g.id);
+const FEATURE_LABELS: Record<string, string> = Object.fromEntries(
+  FEATURE_GROUPS.map((g) => [g.id, g.label])
+);
 
 const MODEL_OPTIONS = [
   'claude-opus-4-6',
@@ -32,14 +163,18 @@ const MODEL_OPTIONS = [
 ];
 
 function getNumberStep(key: string): string {
-  if (key.startsWith('weight_') || key.startsWith('subweight_') || key.includes('decay') || key.includes('midpoint')) return '0.01';
+  if (key.startsWith('weight_') || key.startsWith('subweight_') || key.includes('decay') || key.includes('midpoint') || key.includes('steepness')) return '0.01';
   return '1';
+}
+
+function isModelKey(key: string): boolean {
+  return key.startsWith('model_');
 }
 
 export default function AdminDashboardPage() {
   const [config, setConfig] = useState<ConfigItem[]>([]);
   const [editedValues, setEditedValues] = useState<Record<string, string>>({});
-  const [activeGroup, setActiveGroup] = useState('models');
+  const [activeGroup, setActiveGroup] = useState(FEATURE_ORDER[0]!);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<{ group: string; message: string; isError: boolean } | null>(null);
@@ -67,13 +202,21 @@ export default function AdminDashboardPage() {
     fetchConfig();
   }, [fetchConfig]);
 
-  const groupedConfig = GROUP_ORDER.reduce<Record<string, ConfigItem[]>>((acc, group) => {
-    acc[group] = config.filter((c) => c.group_name === group);
+  // Group config items by feature group (using key mapping, not DB group_name)
+  const groupedConfig = FEATURE_ORDER.reduce<Record<string, ConfigItem[]>>((acc, featureId) => {
+    const group = FEATURE_GROUPS.find((g) => g.id === featureId)!;
+    // Filter config items whose key belongs to this feature group
+    acc[featureId] = group.keys
+      .map((key) => config.find((c) => c.key === key))
+      .filter((c): c is ConfigItem => c !== undefined);
     return acc;
   }, {});
 
-  const hasChanges = (group: string): boolean => {
-    return (groupedConfig[group] ?? []).some((c) => editedValues[c.key] !== undefined && editedValues[c.key] !== c.value);
+  // Collect any config items not mapped to a feature group
+  const unmapped = config.filter((c) => !KEY_TO_FEATURE[c.key]);
+
+  const hasChanges = (featureId: string): boolean => {
+    return (groupedConfig[featureId] ?? []).some((c) => editedValues[c.key] !== undefined && editedValues[c.key] !== c.value);
   };
 
   const getDisplayValue = (item: ConfigItem): string => {
@@ -84,15 +227,15 @@ export default function AdminDashboardPage() {
     setEditedValues((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = async (group: string) => {
-    const items = groupedConfig[group] ?? [];
+  const handleSave = async (featureId: string) => {
+    const items = groupedConfig[featureId] ?? [];
     const updates = items
       .filter((c) => editedValues[c.key] !== undefined && editedValues[c.key] !== c.value)
       .map((c) => ({ key: c.key, value: editedValues[c.key]! }));
 
     if (updates.length === 0) return;
 
-    setSaving(group);
+    setSaving(featureId);
     setSaveMessage(null);
 
     try {
@@ -104,11 +247,10 @@ export default function AdminDashboardPage() {
 
       if (!res.ok) {
         const data = await res.json() as { error?: string };
-        setSaveMessage({ group, message: data.error ?? 'Save failed', isError: true });
+        setSaveMessage({ group: featureId, message: data.error ?? 'Save failed', isError: true });
         return;
       }
 
-      // Clear edited values for saved items and refresh
       setEditedValues((prev) => {
         const next = { ...prev };
         for (const u of updates) delete next[u.key];
@@ -116,17 +258,22 @@ export default function AdminDashboardPage() {
       });
 
       await fetchConfig();
-      setSaveMessage({ group, message: `Saved ${updates.length} change${updates.length > 1 ? 's' : ''}`, isError: false });
+      setSaveMessage({ group: featureId, message: `Saved ${updates.length} change${updates.length > 1 ? 's' : ''}`, isError: false });
       setTimeout(() => setSaveMessage(null), 3000);
     } catch {
-      setSaveMessage({ group, message: 'Network error', isError: true });
+      setSaveMessage({ group: featureId, message: 'Network error', isError: true });
     } finally {
       setSaving(null);
     }
   };
 
-  const computeWeightSum = (group: string): number => {
-    const items = groupedConfig[group] ?? [];
+  const getWeightGroup = (featureId: string) => FEATURE_GROUPS.find((g) => g.id === featureId);
+
+  const computeWeightSum = (featureId: string): number => {
+    const group = getWeightGroup(featureId);
+    const weightKeys = group?.weightKeys;
+    if (!weightKeys) return 0;
+    const items = (groupedConfig[featureId] ?? []).filter((c) => weightKeys.includes(c.key));
     return items.reduce((sum, c) => {
       const val = Number(getDisplayValue(c));
       return sum + (Number.isNaN(val) ? 0 : val);
@@ -147,22 +294,38 @@ export default function AdminDashboardPage() {
       <aside className="w-56 border-r border-gray-800 p-4 flex-shrink-0">
         <h1 className="text-lg font-bold text-white mb-6">Admin</h1>
         <nav className="space-y-1">
-          {GROUP_ORDER.map((group) => (
+          {FEATURE_ORDER.map((featureId) => {
+            const items = groupedConfig[featureId] ?? [];
+            if (items.length === 0) return null;
+            return (
+              <button
+                key={featureId}
+                onClick={() => setActiveGroup(featureId)}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeGroup === featureId
+                    ? 'bg-blue-600/20 text-blue-400'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                }`}
+              >
+                {FEATURE_LABELS[featureId] ?? featureId}
+                {hasChanges(featureId) && (
+                  <span className="ml-2 inline-block w-2 h-2 bg-amber-400 rounded-full" />
+                )}
+              </button>
+            );
+          })}
+          {unmapped.length > 0 && (
             <button
-              key={group}
-              onClick={() => setActiveGroup(group)}
+              onClick={() => setActiveGroup('_other')}
               className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                activeGroup === group
+                activeGroup === '_other'
                   ? 'bg-blue-600/20 text-blue-400'
                   : 'text-gray-400 hover:text-white hover:bg-gray-800'
               }`}
             >
-              {GROUP_LABELS[group] ?? group}
-              {hasChanges(group) && (
-                <span className="ml-2 inline-block w-2 h-2 bg-amber-400 rounded-full" />
-              )}
+              Other
             </button>
-          ))}
+          )}
         </nav>
       </aside>
 
@@ -171,19 +334,23 @@ export default function AdminDashboardPage() {
         <div className="max-w-3xl">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-semibold text-white">
-              {GROUP_LABELS[activeGroup] ?? activeGroup}
+              {activeGroup === '_other' ? 'Other Settings' : (FEATURE_LABELS[activeGroup] ?? activeGroup)}
             </h2>
             <div className="flex items-center gap-3">
-              {(activeGroup === 'scoring_weights' || activeGroup === 'technical_sub_weights') && (
-                <WeightSumIndicator sum={computeWeightSum(activeGroup)} group={activeGroup} />
+              {activeGroup === 'composite_weights' ? (
+                <CompositeWeightSums items={groupedConfig['composite_weights'] ?? []} getDisplayValue={getDisplayValue} />
+              ) : getWeightGroup(activeGroup)?.weightKeys ? (
+                <WeightSumIndicator sum={computeWeightSum(activeGroup)} />
+              ) : null}
+              {activeGroup !== '_other' && (
+                <button
+                  onClick={() => handleSave(activeGroup)}
+                  disabled={!hasChanges(activeGroup) || saving === activeGroup}
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  {saving === activeGroup ? 'Saving...' : 'Save Changes'}
+                </button>
               )}
-              <button
-                onClick={() => handleSave(activeGroup)}
-                disabled={!hasChanges(activeGroup) || saving === activeGroup}
-                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                {saving === activeGroup ? 'Saving...' : 'Save Changes'}
-              </button>
             </div>
           </div>
 
@@ -196,15 +363,25 @@ export default function AdminDashboardPage() {
           )}
 
           <div className="space-y-4">
-            {(groupedConfig[activeGroup] ?? []).map((item) => (
-              <ConfigField
-                key={item.key}
-                item={item}
-                displayValue={getDisplayValue(item)}
-                isChanged={editedValues[item.key] !== undefined && editedValues[item.key] !== item.value}
-                onChange={(val) => handleChange(item.key, val)}
-              />
-            ))}
+            {activeGroup === '_other'
+              ? unmapped.map((item) => (
+                  <ConfigField
+                    key={item.key}
+                    item={item}
+                    displayValue={getDisplayValue(item)}
+                    isChanged={editedValues[item.key] !== undefined && editedValues[item.key] !== item.value}
+                    onChange={(val) => handleChange(item.key, val)}
+                  />
+                ))
+              : (groupedConfig[activeGroup] ?? []).map((item) => (
+                  <ConfigField
+                    key={item.key}
+                    item={item}
+                    displayValue={getDisplayValue(item)}
+                    isChanged={editedValues[item.key] !== undefined && editedValues[item.key] !== item.value}
+                    onChange={(val) => handleChange(item.key, val)}
+                  />
+                ))}
           </div>
         </div>
       </main>
@@ -237,7 +414,7 @@ function ConfigField({
         <span className="text-[10px] text-gray-600 whitespace-nowrap ml-4">{updatedStr}</span>
       </div>
 
-      {item.type === 'string' && item.group_name === 'models' ? (
+      {isModelKey(item.key) ? (
         <select
           value={displayValue}
           onChange={(e) => onChange(e.target.value)}
@@ -279,23 +456,44 @@ function ConfigField({
   );
 }
 
-function WeightSumIndicator({ sum, group }: { sum: number; group: string }) {
-  // For scoring_weights, we have two sets: stock (4 weights) and crypto (4 weights) + 2 override weights
-  // For technical_sub_weights, all 5 should sum to 1.0
-  const isValid = group === 'technical_sub_weights'
-    ? Math.abs(sum - 1.0) < 0.001
-    : true; // scoring_weights has multiple sets, hard to validate as a single sum
-
-  // For scoring_weights, just show the raw sum
-  const label = group === 'technical_sub_weights' ? 'Sum' : 'Total';
+function WeightSumIndicator({ sum }: { sum: number }) {
+  const isValid = Math.abs(sum - 1.0) < 0.001;
 
   return (
-    <span className={`text-xs font-mono ${
-      group === 'technical_sub_weights'
-        ? (isValid ? 'text-emerald-400' : 'text-red-400')
-        : 'text-gray-400'
-    }`}>
-      {label}: {sum.toFixed(2)}
+    <span className={`text-xs font-mono ${isValid ? 'text-emerald-400' : 'text-red-400'}`}>
+      Sum: {sum.toFixed(2)}
     </span>
+  );
+}
+
+const COMPOSITE_SUBGROUPS: { label: string; keys: string[] }[] = [
+  { label: 'Stock', keys: ['weight_stock_technical', 'weight_stock_sentiment', 'weight_stock_fundamental', 'weight_stock_regime'] },
+  { label: 'Crypto', keys: ['weight_crypto_technical', 'weight_crypto_sentiment', 'weight_crypto_fundamental', 'weight_crypto_regime'] },
+  { label: 'Crypto (no sent.)', keys: ['weight_crypto_sentiment_missing_technical', 'weight_crypto_sentiment_missing_regime'] },
+];
+
+function CompositeWeightSums({
+  items,
+  getDisplayValue,
+}: {
+  items: ConfigItem[];
+  getDisplayValue: (item: ConfigItem) => string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      {COMPOSITE_SUBGROUPS.map((sg) => {
+        const sum = sg.keys.reduce((s, k) => {
+          const item = items.find((i) => i.key === k);
+          const val = item ? Number(getDisplayValue(item)) : 0;
+          return s + (Number.isNaN(val) ? 0 : val);
+        }, 0);
+        const isValid = Math.abs(sum - 1.0) < 0.001;
+        return (
+          <span key={sg.label} className={`text-[10px] font-mono ${isValid ? 'text-emerald-400' : 'text-red-400'}`}>
+            {sg.label}: {sum.toFixed(2)}
+          </span>
+        );
+      })}
+    </div>
   );
 }

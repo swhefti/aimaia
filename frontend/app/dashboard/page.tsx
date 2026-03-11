@@ -52,13 +52,25 @@ import { DataFreshnessBar } from '@/components/data-freshness-bar';
 import { RiskReportModal } from '@/components/dashboard/risk-report-modal';
 import { LogOut, Plus, Minus, BarChart3, Settings, ShieldAlert } from 'lucide-react';
 
-function computeWeightedComposite(scores: AgentScore[]): number {
+type AgentWeights = { technical: number; sentiment: number; fundamental: number; regime: number };
+type WeightsConfig = { stock: AgentWeights; crypto: AgentWeights; cryptoSentimentMissing: AgentWeights } | null;
+
+function computeWeightedComposite(scores: AgentScore[], dynamicWeights?: WeightsConfig): number {
   if (scores.length === 0) return 0;
   const ticker = scores[0]!.ticker;
   const sentEntry = scores.find((s) => s.agentType === 'sentiment');
   const isCrypto = ASSET_TYPE_MAP[ticker] === 'crypto';
   const sentimentMissing = isCrypto && (!sentEntry || sentEntry.confidence === 0 || sentEntry.dataFreshness === 'missing');
-  const w = getWeightsForTicker(ticker, sentimentMissing);
+
+  let w: AgentWeights;
+  if (dynamicWeights) {
+    if (sentimentMissing) w = dynamicWeights.cryptoSentimentMissing;
+    else if (isCrypto) w = dynamicWeights.crypto;
+    else w = dynamicWeights.stock;
+  } else {
+    w = getWeightsForTicker(ticker, sentimentMissing);
+  }
+
   const tech = scores.find((s) => s.agentType === 'technical')?.score ?? 0;
   const sent = sentEntry?.score ?? 0;
   const fund = scores.find((s) => s.agentType === 'fundamental')?.score ?? 0;
@@ -96,6 +108,17 @@ export default function DashboardPage() {
   const [aiOpusPct, setAiOpusPct] = useState<number | null>(null);
   const [aiSonnetPct, setAiSonnetPct] = useState<number | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [weightsConfig, setWeightsConfig] = useState<WeightsConfig>(null);
+
+  // Fetch dynamic weights once
+  useEffect(() => {
+    fetch('/api/config/weights')
+      .then((r) => r.json())
+      .then((d: { stock: AgentWeights; crypto: AgentWeights; cryptoSentimentMissing: AgentWeights }) =>
+        setWeightsConfig(d),
+      )
+      .catch(() => {});
+  }, []);
 
   // Fees preference
   const feesEnabled = typeof window !== 'undefined' && localStorage.getItem('maipa_include_fees') === 'true';
@@ -288,7 +311,7 @@ export default function DashboardPage() {
             const posScores = await getAgentScoresForTicker(supabase, p.ticker, undefined, asOfDate);
             scoresMap[p.ticker] = posScores;
             if (posScores.length > 0) {
-              compositeMap[p.ticker] = computeWeightedComposite(posScores);
+              compositeMap[p.ticker] = computeWeightedComposite(posScores, weightsConfig);
             }
           } catch { /* Non-blocking */ }
         })
@@ -512,7 +535,7 @@ export default function DashboardPage() {
             const posScores = await getAgentScoresForTicker(supabase, p.ticker);
             scoresMap[p.ticker] = posScores;
             if (posScores.length > 0) {
-              compositeMap[p.ticker] = computeWeightedComposite(posScores);
+              compositeMap[p.ticker] = computeWeightedComposite(posScores, weightsConfig);
             }
           } catch { /* Non-blocking */ }
         })
@@ -725,7 +748,7 @@ export default function DashboardPage() {
           const posScores = await getAgentScoresForTicker(supabase, item.ticker);
           setAgentScores((prev) => ({ ...prev, [item.ticker]: posScores }));
           if (posScores.length > 0) {
-            setLatestScores((prev) => ({ ...prev, [item.ticker]: computeWeightedComposite(posScores) }));
+            setLatestScores((prev) => ({ ...prev, [item.ticker]: computeWeightedComposite(posScores, weightsConfig) }));
           }
         } catch { /* Non-blocking */ }
       }
@@ -813,7 +836,7 @@ export default function DashboardPage() {
       const posScores = await getAgentScoresForTicker(supabase, ticker, undefined, asOfDate);
       setAgentScores((prev) => ({ ...prev, [ticker]: posScores }));
       if (posScores.length > 0) {
-        setLatestScores((prev) => ({ ...prev, [ticker]: computeWeightedComposite(posScores) }));
+        setLatestScores((prev) => ({ ...prev, [ticker]: computeWeightedComposite(posScores, weightsConfig) }));
       }
     } catch { /* Non-blocking */ }
 

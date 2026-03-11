@@ -20,12 +20,13 @@ interface FundIndicator {
   weight: number;
 }
 
+// Must stay in sync with system_config subweight_fundamental_* values
 const WEIGHTS: { key: string; scoreKey: string; label: string; weight: number }[] = [
   { key: 'pe', scoreKey: 'peScore', label: 'P/E Ratio', weight: 0.25 },
   { key: 'revenue', scoreKey: 'revenueScore', label: 'Revenue Growth', weight: 0.25 },
-  { key: 'margin', scoreKey: 'marginScore', label: 'Profit Margin', weight: 0.25 },
-  { key: 'roe', scoreKey: 'roeScore', label: 'Return on Equity', weight: 0.15 },
-  { key: 'debt', scoreKey: 'debtScore', label: 'Debt/Equity', weight: 0.10 },
+  { key: 'margin', scoreKey: 'marginScore', label: 'Profit Margin', weight: 0.15 },
+  { key: 'roe', scoreKey: 'roeScore', label: 'Return on Equity', weight: 0.20 },
+  { key: 'debt', scoreKey: 'debtScore', label: 'Debt/Equity', weight: 0.15 },
 ];
 
 function getRawValue(key: string, fund: TickerFundamental | null): string {
