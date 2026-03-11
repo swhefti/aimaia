@@ -398,7 +398,7 @@ export default function OnboardingPage() {
   const [recommendations, setRecommendations] = useState<PortfolioRecommendation[]>([]);
   const [currentRecIdx, setCurrentRecIdx] = useState(0);
   const [approvedPositions, setApprovedPositions] = useState<
-    { ticker: string; allocationPct: number; price: number }[]
+    { ticker: string; allocationPct: number; price: number; quantity?: number }[]
   >([]);
   const [adjustedAllocation, setAdjustedAllocation] = useState(0);
   const [showRecommendations, setShowRecommendations] = useState(false);
@@ -556,7 +556,7 @@ export default function OnboardingPage() {
     const investAmount = capital * (allocationPct / 100);
     const quantity = investAmount / rec.price;
 
-    // Save position immediately
+    // Save position for guests in sessionStorage
     if (isGuest) {
       const existingRaw = sessionStorage.getItem('guest_positions');
       const existing = existingRaw ? JSON.parse(existingRaw) : [];
@@ -569,22 +569,13 @@ export default function OnboardingPage() {
         openedAt: new Date().toISOString(),
       });
       sessionStorage.setItem('guest_positions', JSON.stringify(existing));
-    } else if (portfolioIdRef.current) {
-      try {
-        await addPortfolioPosition(supabase, portfolioIdRef.current!, rec.ticker, quantity, rec.price);
-        console.log('Position saved:', rec.ticker);
-      } catch (err) {
-        console.error('Failed to save position:', err);
-        setApproveError(`Failed to save ${rec.ticker}. Please try again.`);
-        setApproveSaving(false);
-        return; // Don't advance — let the user retry
-      }
     }
+    // For real users, positions are batched and saved in finishOnboarding
 
     investedValueRef.current += investAmount;
     setApprovedPositions((prev) => [
       ...prev,
-      { ticker: rec.ticker, allocationPct, price: rec.price },
+      { ticker: rec.ticker, allocationPct, price: rec.price, quantity },
     ]);
     setApproveSaving(false);
     advanceToNext();
@@ -611,9 +602,50 @@ export default function OnboardingPage() {
 
     try {
       if (!isGuest && portfolioIdRef.current) {
-        // Positions are already saved — just update the valuation and cash balance
+        // Save all approved positions via API route (uses service role, bypasses RLS)
+        if (approvedPositions.length > 0) {
+          const positionsPayload = approvedPositions
+            .filter((p) => p.quantity && p.quantity > 0)
+            .map((p) => ({
+              ticker: p.ticker,
+              quantity: p.quantity!,
+              avgPurchasePrice: p.price,
+            }));
+
+          if (positionsPayload.length > 0) {
+            const res = await fetch('/api/portfolio/positions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                portfolioId: portfolioIdRef.current,
+                userId: user.id,
+                positions: positionsPayload,
+              }),
+            });
+
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => ({}));
+              console.error('Position save API error:', errBody);
+              // Fall back to direct insert
+              for (const p of positionsPayload) {
+                try {
+                  await addPortfolioPosition(supabase, portfolioIdRef.current!, p.ticker, p.quantity, p.avgPurchasePrice);
+                } catch (err) {
+                  console.error('Fallback position save failed:', p.ticker, err);
+                }
+              }
+            } else {
+              const result = await res.json();
+              console.log('Positions saved via API:', result.saved);
+            }
+          }
+        }
+
+        // Update cash balance and valuation
         const cashValue = capital - investedValueRef.current;
-        await setCashBalance(supabase, portfolioIdRef.current!, Math.max(0, cashValue));
+        await setCashBalance(supabase, portfolioIdRef.current!, Math.max(0, cashValue)).catch((err) => {
+          console.error('setCashBalance error:', err);
+        });
         const initProb = computeGoalProbability({
           cumulativeReturn: 0,
           goalReturn: returnGoalPct / 100,
@@ -622,7 +654,9 @@ export default function OnboardingPage() {
           maxPositions,
           riskProfile,
         });
-        await upsertPortfolioValuation(supabase, portfolioIdRef.current!, capital, cashValue, 0, 0, initProb);
+        await upsertPortfolioValuation(supabase, portfolioIdRef.current!, capital, cashValue, 0, 0, initProb).catch((err) => {
+          console.error('upsertPortfolioValuation error:', err);
+        });
       }
 
       // Mark onboarding as completed
