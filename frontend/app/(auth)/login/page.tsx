@@ -122,7 +122,7 @@ function LoginPageInner() {
               placeholder="you@example.com"
               className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-slate-900 text-sm
                          placeholder:text-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
+                         focus:outline-none focus:ring-2 focus:ring-[#D67C63] focus:border-transparent"
               autoComplete="email"
             />
           </div>
@@ -133,7 +133,7 @@ function LoginPageInner() {
                 Password
               </label>
               <Link href="/auth/forgot-password"
-                className="text-xs text-[#2E6BE6] hover:underline">
+                className="text-xs text-[#D67C63] hover:underline">
                 Forgot password?
               </Link>
             </div>
@@ -145,7 +145,7 @@ function LoginPageInner() {
               placeholder="••••••••"
               className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-slate-900 text-sm
                          placeholder:text-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
+                         focus:outline-none focus:ring-2 focus:ring-[#D67C63] focus:border-transparent"
               autoComplete="current-password"
             />
           </div>
@@ -154,7 +154,7 @@ function LoginPageInner() {
             onClick={handleLogin}
             disabled={loading}
             className="w-full bg-[#1E3A5F] text-white rounded-lg py-2.5 text-sm font-medium
-                       hover:bg-[#2E6BE6] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                       hover:bg-[#D67C63] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
@@ -186,7 +186,7 @@ function LoginPageInner() {
 
           <p className="text-center text-sm text-slate-500 mt-5">
             Don&apos;t have an account?{' '}
-            <Link href="/signup" className="text-[#2E6BE6] hover:underline font-medium">
+            <Link href="/signup" className="text-[#D67C63] hover:underline font-medium">
               Create one
             </Link>
           </p>

@@ -88,7 +88,7 @@ export default function SignupPage() {
               onChange={e => setDisplayName(e.target.value)}
               placeholder="Your name"
               className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
+                         focus:outline-none focus:ring-2 focus:ring-[#D67C63] focus:border-transparent"
             />
           </div>
 
@@ -100,7 +100,7 @@ export default function SignupPage() {
               onChange={e => setEmail(e.target.value)}
               placeholder="you@example.com"
               className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
+                         focus:outline-none focus:ring-2 focus:ring-[#D67C63] focus:border-transparent"
               autoComplete="email"
             />
           </div>
@@ -114,7 +114,7 @@ export default function SignupPage() {
               onKeyDown={e => e.key === 'Enter' && handleSignup()}
               placeholder="Min. 8 characters"
               className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-[#2E6BE6] focus:border-transparent"
+                         focus:outline-none focus:ring-2 focus:ring-[#D67C63] focus:border-transparent"
               autoComplete="new-password"
             />
           </div>
@@ -123,14 +123,14 @@ export default function SignupPage() {
             onClick={handleSignup}
             disabled={loading}
             className="w-full bg-[#1E3A5F] text-white rounded-lg py-2.5 text-sm font-medium
-                       hover:bg-[#2E6BE6] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                       hover:bg-[#D67C63] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {loading ? 'Creating account...' : 'Create account'}
           </button>
 
           <p className="text-center text-sm text-slate-500 mt-5">
             Already have an account?{' '}
-            <Link href="/login" className="text-[#2E6BE6] hover:underline font-medium">
+            <Link href="/login" className="text-[#D67C63] hover:underline font-medium">
               Sign in
             </Link>
           </p>
