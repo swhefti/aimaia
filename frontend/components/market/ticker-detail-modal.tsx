@@ -321,7 +321,7 @@ export function TickerDetailModal({
                     const label = s.agentType === 'technical' ? 'Technical Score'
                       : s.agentType === 'sentiment' ? 'Sentiment Score'
                       : s.agentType === 'fundamental' ? 'Fundamental Score'
-                      : s.agentType === 'market_regime' ? 'Regime Score'
+                      : s.agentType === 'market_regime' ? 'Market Regime'
                       : `${s.agentType} Score`;
                     const hasBreakdown =
                       (s.agentType === 'technical') ||
@@ -347,6 +347,9 @@ export function TickerDetailModal({
                               <span className="text-[11px]">&#9432;</span>
                               <span className="transition-transform duration-200 text-[8px] inline-block" style={{ transform: isOpen ? 'rotate(180deg)' : 'none' }}>&#9660;</span>
                             </button>
+                          )}
+                          {s.agentType === 'market_regime' && (
+                            <span className="text-[10px] text-gray-500 ml-1" title="Broad market conditions (shared signal)">Shared signal</span>
                           )}
                         </div>
                         {/* Technical Score Breakdown — collapsible */}

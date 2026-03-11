@@ -261,6 +261,132 @@ async function runSentiment(supabase: ReturnType<typeof getServiceSupabase>, tic
   return `ok (score=${score.toFixed(2)})`;
 }
 
+// ---- Step 4b: Market Regime scoring ----
+
+function calculateRealizedVol(closes: number[], window: number, annualizationFactor: number): number {
+  if (closes.length < window + 1) return 0;
+  const returns: number[] = [];
+  const slice = closes.slice(-(window + 1));
+  for (let i = 1; i < slice.length; i++) returns.push(Math.log(slice[i]! / slice[i - 1]!));
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
+  return Math.sqrt(variance) * Math.sqrt(annualizationFactor);
+}
+
+function scoreTrend(price: number, shortEma: number, longEma: number): number {
+  let score = 0;
+  if (price > shortEma) score += 0.4; else score -= 0.4;
+  if (shortEma > longEma) score += 0.4; else score -= 0.4;
+  score += clamp(((price - shortEma) / shortEma) * 2, -0.2, 0.2);
+  return clamp(score, -1, 1);
+}
+
+function computeAdaptiveTrend(closes: number[]): { trendScore: number; confidence: number } {
+  const price = closes[closes.length - 1]!;
+  const li = closes.length - 1;
+  if (closes.length >= 200) {
+    const ema50 = calculateEMA(closes, 50);
+    const ema200 = calculateEMA(closes, 200);
+    return { trendScore: scoreTrend(price, ema50[li]!, ema200[li]!), confidence: 0.8 };
+  }
+  if (closes.length >= 50) {
+    const ema20 = calculateEMA(closes, 20);
+    const ema50 = calculateEMA(closes, 50);
+    return { trendScore: scoreTrend(price, ema20[li]!, ema50[li]!), confidence: 0.6 };
+  }
+  const ema10 = calculateEMA(closes, 10);
+  const ema20 = calculateEMA(closes, 20);
+  return { trendScore: scoreTrend(price, ema10[li]!, ema20[li]!), confidence: 0.4 };
+}
+
+function scoreVolatility(vol: number, thresholds: { low: number; normal: number; elevated: number }): number {
+  if (vol < thresholds.low) return 0.5;
+  if (vol < thresholds.normal) return 0.3;
+  if (vol < thresholds.elevated) return 0.0;
+  if (vol < thresholds.elevated * 1.5) return -0.3;
+  return -0.6;
+}
+
+function getRegimeLabel(score: number): string {
+  if (score > 0.4) return 'bullish';
+  if (score > 0.1) return 'neutral';
+  if (score > -0.3) return 'cautious';
+  return 'bearish';
+}
+
+async function fetchCloses(supabase: ReturnType<typeof getServiceSupabase>, ticker: string, dateStr: string): Promise<number[]> {
+  const { data } = await supabase.from('price_history').select('close').eq('ticker', ticker).lte('date', dateStr).order('date', { ascending: true }).limit(250);
+  return (data ?? []).map((r) => Number(r.close));
+}
+
+async function runRegime(supabase: ReturnType<typeof getServiceSupabase>, dateStr: string): Promise<string> {
+  const [spyCloses, xlkCloses, xlvCloses] = await Promise.all([
+    fetchCloses(supabase, 'SPY', dateStr),
+    fetchCloses(supabase, 'XLK', dateStr),
+    fetchCloses(supabase, 'XLV', dateStr),
+  ]);
+
+  if (spyCloses.length >= 20) {
+    const { trendScore: spyTrendScore, confidence: trendConfidence } = computeAdaptiveTrend(spyCloses);
+    const vol = calculateRealizedVol(spyCloses, Math.min(20, spyCloses.length - 1), 252);
+    const volScore = scoreVolatility(vol, { low: 0.10, normal: 0.15, elevated: 0.20 });
+
+    let sectorScore = 0;
+    if (xlkCloses.length >= 21 && xlvCloses.length >= 21) {
+      const xlkRet = (xlkCloses[xlkCloses.length - 1]! - xlkCloses[xlkCloses.length - 21]!) / xlkCloses[xlkCloses.length - 21]!;
+      const xlvRet = (xlvCloses[xlvCloses.length - 1]! - xlvCloses[xlvCloses.length - 21]!) / xlvCloses[xlvCloses.length - 21]!;
+      const diff = xlkRet - xlvRet;
+      sectorScore = diff > 0.02 ? 0.3 : diff < -0.02 ? -0.3 : 0;
+    }
+
+    const regimeScore = clamp(spyTrendScore * 0.50 + volScore * 0.30 + sectorScore * 0.20, -1, 1);
+    const label = getRegimeLabel(regimeScore);
+    const components = {
+      spyTrendScore, volatilityScore: volScore, sectorRotationScore: sectorScore,
+      regimeLabel: label,
+      volatilityLevel: vol < 0.10 ? 'low' : vol < 0.20 ? 'moderate' : 'high',
+      broadTrend: spyTrendScore > 0.2 ? 'uptrend' : spyTrendScore < -0.2 ? 'downtrend' : 'sideways',
+      sectorRotation: sectorScore > 0.1 ? 'risk-on' : sectorScore < -0.1 ? 'risk-off' : 'balanced',
+    };
+    await upsertScore(supabase, 'MARKET', dateStr, 'market_regime', regimeScore, trendConfidence, components as unknown as Record<string, number>, `Stock regime: ${label} (${regimeScore.toFixed(2)})`, 'current');
+  } else {
+    await upsertScore(supabase, 'MARKET', dateStr, 'market_regime', 0, 0.1, {}, 'Insufficient SPY data', 'missing');
+  }
+
+  const [btcCloses, ethCloses] = await Promise.all([
+    fetchCloses(supabase, 'BTC', dateStr),
+    fetchCloses(supabase, 'ETH', dateStr),
+  ]);
+
+  if (btcCloses.length >= 20) {
+    const { trendScore: btcTrendScore, confidence: trendConfidence } = computeAdaptiveTrend(btcCloses);
+    const vol = calculateRealizedVol(btcCloses, Math.min(20, btcCloses.length - 1), 365);
+    const volScore = scoreVolatility(vol, { low: 0.40, normal: 0.60, elevated: 0.80 });
+
+    let altScore = 0;
+    if (ethCloses.length >= 21 && btcCloses.length >= 21) {
+      const ethRet = (ethCloses[ethCloses.length - 1]! - ethCloses[ethCloses.length - 21]!) / ethCloses[ethCloses.length - 21]!;
+      const btcRet = (btcCloses[btcCloses.length - 1]! - btcCloses[btcCloses.length - 21]!) / btcCloses[btcCloses.length - 21]!;
+      altScore = clamp((ethRet - btcRet) * 3, -0.3, 0.3);
+    }
+
+    const regimeScore = clamp(btcTrendScore * 0.50 + volScore * 0.25 + altScore * 0.25, -1, 1);
+    const label = getRegimeLabel(regimeScore);
+    const components = {
+      btcTrendScore, volatilityScore: volScore, altSeasonScore: altScore,
+      regimeLabel: label,
+      volatilityLevel: vol < 0.40 ? 'low' : vol < 0.80 ? 'moderate' : 'high',
+      broadTrend: btcTrendScore > 0.2 ? 'uptrend' : btcTrendScore < -0.2 ? 'downtrend' : 'sideways',
+      sectorRotation: altScore > 0.1 ? 'risk-on' : altScore < -0.1 ? 'risk-off' : 'balanced',
+    };
+    await upsertScore(supabase, 'MARKET_CRYPTO', dateStr, 'market_regime', regimeScore, trendConfidence, components as unknown as Record<string, number>, `Crypto regime: ${label} (${regimeScore.toFixed(2)})`, 'current');
+  } else {
+    await upsertScore(supabase, 'MARKET_CRYPTO', dateStr, 'market_regime', 0, 0.1, {}, 'Insufficient BTC data', 'missing');
+  }
+
+  return 'ok';
+}
+
 // ---- Step 4: Fundamental scoring ----
 
 const SECTOR_MEDIAN_PE: Record<string, number> = {
@@ -446,6 +572,10 @@ export async function POST(req: NextRequest) {
     steps.technical = techResult.status === 'fulfilled' ? techResult.value : `error: ${techResult.reason}`;
     steps.sentiment = sentResult.status === 'fulfilled' ? sentResult.value : `error: ${sentResult.reason}`;
     steps.fundamental = fundResult.status === 'fulfilled' ? fundResult.value : `error: ${fundResult.reason}`;
+
+    // Step 4b: Market regime (global signal, runs once regardless of ticker)
+    try { steps.regime = await runRegime(supabase, dateStr); }
+    catch (e) { steps.regime = `error: ${e instanceof Error ? e.message : String(e)}`; }
 
     // Step 5: Conclusion
     try { steps.conclusion = await refreshConclusion(supabase, ticker, dateStr); }

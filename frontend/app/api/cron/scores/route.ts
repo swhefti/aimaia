@@ -290,12 +290,32 @@ function calculateRealizedVol(closes: number[], window: number, annualizationFac
   return Math.sqrt(variance) * Math.sqrt(annualizationFactor);
 }
 
-function scoreTrend(price: number, ema50: number, ema200: number): number {
+function scoreTrend(price: number, shortEma: number, longEma: number): number {
   let score = 0;
-  if (price > ema50) score += 0.4; else score -= 0.4;
-  if (ema50 > ema200) score += 0.4; else score -= 0.4;
-  score += clamp(((price - ema50) / ema50) * 2, -0.2, 0.2);
+  if (price > shortEma) score += 0.4; else score -= 0.4;
+  if (shortEma > longEma) score += 0.4; else score -= 0.4;
+  score += clamp(((price - shortEma) / shortEma) * 2, -0.2, 0.2);
   return clamp(score, -1, 1);
+}
+
+/** Compute trend score adaptively based on available data length */
+function computeAdaptiveTrend(closes: number[]): { trendScore: number; confidence: number } {
+  const price = closes[closes.length - 1]!;
+  const li = closes.length - 1;
+  if (closes.length >= 200) {
+    const ema50 = calculateEMA(closes, 50);
+    const ema200 = calculateEMA(closes, 200);
+    return { trendScore: scoreTrend(price, ema50[li]!, ema200[li]!), confidence: 0.8 };
+  }
+  if (closes.length >= 50) {
+    const ema20 = calculateEMA(closes, 20);
+    const ema50 = calculateEMA(closes, 50);
+    return { trendScore: scoreTrend(price, ema20[li]!, ema50[li]!), confidence: 0.6 };
+  }
+  // >= 20
+  const ema10 = calculateEMA(closes, 10);
+  const ema20 = calculateEMA(closes, 20);
+  return { trendScore: scoreTrend(price, ema10[li]!, ema20[li]!), confidence: 0.4 };
 }
 
 function scoreVolatility(vol: number, thresholds: { low: number; normal: number; elevated: number }): number {
@@ -326,12 +346,9 @@ async function runRegime(supabase: SB, dateStr: string): Promise<{ stock: string
     fetchCloses(supabase, 'XLV', dateStr),
   ]);
 
-  if (spyCloses.length >= 50) {
-    const spyEma50 = calculateEMA(spyCloses, 50);
-    const spyEma200 = calculateEMA(spyCloses, 200);
-    const spyPrice = spyCloses[spyCloses.length - 1]!;
-    const spyTrendScore = scoreTrend(spyPrice, spyEma50[spyEma50.length - 1]!, spyEma200[spyEma200.length - 1]!);
-    const vol = calculateRealizedVol(spyCloses, 20, 252);
+  if (spyCloses.length >= 20) {
+    const { trendScore: spyTrendScore, confidence: trendConfidence } = computeAdaptiveTrend(spyCloses);
+    const vol = calculateRealizedVol(spyCloses, Math.min(20, spyCloses.length - 1), 252);
     const volScore = scoreVolatility(vol, { low: 0.10, normal: 0.15, elevated: 0.20 });
 
     let sectorScore = 0;
@@ -343,9 +360,17 @@ async function runRegime(supabase: SB, dateStr: string): Promise<{ stock: string
     }
 
     const regimeScore = clamp(spyTrendScore * 0.50 + volScore * 0.30 + sectorScore * 0.20, -1, 1);
-    const confidence = spyCloses.length >= 200 ? 0.8 : 0.5;
     const label = getRegimeLabel(regimeScore);
-    await upsertScore(supabase, 'MARKET', dateStr, 'market_regime', regimeScore, confidence, { spyTrendScore, volatilityScore: volScore, sectorRotationScore: sectorScore }, `Stock regime: ${label} (${regimeScore.toFixed(2)})`, 'current');
+    const components = {
+      spyTrendScore,
+      volatilityScore: volScore,
+      sectorRotationScore: sectorScore,
+      regimeLabel: label,
+      volatilityLevel: vol < 0.10 ? 'low' : vol < 0.20 ? 'moderate' : 'high',
+      broadTrend: spyTrendScore > 0.2 ? 'uptrend' : spyTrendScore < -0.2 ? 'downtrend' : 'sideways',
+      sectorRotation: sectorScore > 0.1 ? 'risk-on' : sectorScore < -0.1 ? 'risk-off' : 'balanced',
+    };
+    await upsertScore(supabase, 'MARKET', dateStr, 'market_regime', regimeScore, trendConfidence, components as unknown as Record<string, number>, `Stock regime: ${label} (${regimeScore.toFixed(2)})`, 'current');
   } else {
     await upsertScore(supabase, 'MARKET', dateStr, 'market_regime', 0, 0.1, {}, 'Insufficient SPY data', 'missing');
   }
@@ -356,12 +381,9 @@ async function runRegime(supabase: SB, dateStr: string): Promise<{ stock: string
     fetchCloses(supabase, 'ETH', dateStr),
   ]);
 
-  if (btcCloses.length >= 50) {
-    const btcEma50 = calculateEMA(btcCloses, 50);
-    const btcEma200 = calculateEMA(btcCloses, 200);
-    const btcPrice = btcCloses[btcCloses.length - 1]!;
-    const btcTrendScore = scoreTrend(btcPrice, btcEma50[btcEma50.length - 1]!, btcEma200[btcEma200.length - 1]!);
-    const vol = calculateRealizedVol(btcCloses, 20, 365);
+  if (btcCloses.length >= 20) {
+    const { trendScore: btcTrendScore, confidence: trendConfidence } = computeAdaptiveTrend(btcCloses);
+    const vol = calculateRealizedVol(btcCloses, Math.min(20, btcCloses.length - 1), 365);
     const volScore = scoreVolatility(vol, { low: 0.40, normal: 0.60, elevated: 0.80 });
 
     let altScore = 0;
@@ -372,9 +394,17 @@ async function runRegime(supabase: SB, dateStr: string): Promise<{ stock: string
     }
 
     const regimeScore = clamp(btcTrendScore * 0.50 + volScore * 0.25 + altScore * 0.25, -1, 1);
-    const confidence = btcCloses.length >= 200 ? 0.75 : 0.4;
     const label = getRegimeLabel(regimeScore);
-    await upsertScore(supabase, 'MARKET_CRYPTO', dateStr, 'market_regime', regimeScore, confidence, { btcTrendScore, volatilityScore: volScore, altSeasonScore: altScore }, `Crypto regime: ${label} (${regimeScore.toFixed(2)})`, 'current');
+    const components = {
+      btcTrendScore,
+      volatilityScore: volScore,
+      altSeasonScore: altScore,
+      regimeLabel: label,
+      volatilityLevel: vol < 0.40 ? 'low' : vol < 0.80 ? 'moderate' : 'high',
+      broadTrend: btcTrendScore > 0.2 ? 'uptrend' : btcTrendScore < -0.2 ? 'downtrend' : 'sideways',
+      sectorRotation: altScore > 0.1 ? 'risk-on' : altScore < -0.1 ? 'risk-off' : 'balanced',
+    };
+    await upsertScore(supabase, 'MARKET_CRYPTO', dateStr, 'market_regime', regimeScore, trendConfidence, components as unknown as Record<string, number>, `Crypto regime: ${label} (${regimeScore.toFixed(2)})`, 'current');
   } else {
     await upsertScore(supabase, 'MARKET_CRYPTO', dateStr, 'market_regime', 0, 0.1, {}, 'Insufficient BTC data', 'missing');
   }
