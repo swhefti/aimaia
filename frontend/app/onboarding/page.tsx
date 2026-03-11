@@ -363,13 +363,15 @@ export default function OnboardingPage() {
   const annualized = annualizedReturn(returnGoalPct, horizonMonths);
 
   // Clamp return goal when horizon changes
-  const prevMaxRef = useRef(maxReturnPct);
+  const prevHorizonRef = useRef(horizonMonths);
   useEffect(() => {
-    if (maxReturnPct !== prevMaxRef.current) {
-      prevMaxRef.current = maxReturnPct;
-      setReturnGoalPct((prev) => Math.min(prev, maxReturnPct));
+    if (horizonMonths !== prevHorizonRef.current) {
+      prevHorizonRef.current = horizonMonths;
+      const minT = Math.round((Math.pow(1.01, horizonMonths / 12) - 1) * 1000) / 10;
+      const maxT = Math.round((Math.pow(1.15, horizonMonths / 12) - 1) * 1000) / 10;
+      setReturnGoalPct((prev) => Math.min(Math.max(prev, minT), maxT));
     }
-  }, [maxReturnPct]);
+  }, [horizonMonths]);
 
   // Step 4: Risk
   const [volatility, setVolatility] = useState<VolatilityTolerance>('balanced');
@@ -799,15 +801,9 @@ export default function OnboardingPage() {
 
               {/* Step 3: Return Goal */}
               {step === 3 && (() => {
-                // Slider works in annualized return space (1% to 18%)
-                const annualizedGoal = annualized;
-                const minAnnual = 1;
-                const maxAnnual = 18;
-                const handleAnnualChange = (annualPct: number) => {
-                  // Convert annualized % back to total return % for the given horizon
-                  const totalReturn = (Math.pow(1 + annualPct / 100, horizonMonths / 12) - 1) * 100;
-                  setReturnGoalPct(Math.round(Math.min(totalReturn, maxReturnPct) * 10) / 10);
-                };
+                // Slider range derived from annualized bounds (1%–15%) converted to total return
+                const minTotal = Math.round((Math.pow(1 + 0.01, horizonMonths / 12) - 1) * 1000) / 10;
+                const maxTotal = Math.round((Math.pow(1 + 0.15, horizonMonths / 12) - 1) * 1000) / 10;
                 return (
                 <div className="space-y-6">
                   <div className="flex flex-col items-center gap-3">
@@ -815,31 +811,31 @@ export default function OnboardingPage() {
                     <div className="text-center">
                       <h2 className="text-xl font-semibold text-white">What&apos;s your return goal?</h2>
                       <p className="text-sm text-gray-400 mt-1">
-                        Annualized return target over your {formatHorizon(horizonMonths)} horizon.
+                        Total return on invested capital over your {formatHorizon(horizonMonths)} horizon.
                       </p>
                     </div>
                   </div>
                   <div className="text-center">
                     <span className="text-4xl font-bold text-white">
-                      {annualizedGoal.toFixed(1)}%
+                      {returnGoalPct.toFixed(1)}%
                     </span>
                     <span className="text-sm text-gray-400 ml-2">
-                      annualized ({returnGoalPct.toFixed(1)}% total)
+                      ({annualized.toFixed(1)}% annualized)
                     </span>
                   </div>
                   <div className="space-y-2">
                     <input
                       type="range"
-                      min={minAnnual}
-                      max={maxAnnual}
+                      min={minTotal}
+                      max={maxTotal}
                       step={0.1}
-                      value={Math.min(annualizedGoal, maxAnnual)}
-                      onChange={(e) => handleAnnualChange(Number(e.target.value))}
+                      value={Math.min(Math.max(returnGoalPct, minTotal), maxTotal)}
+                      onChange={(e) => setReturnGoalPct(Number(e.target.value))}
                       className="w-full accent-accent-blue"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
-                      <span>{minAnnual}%</span>
-                      <span>{maxAnnual}%</span>
+                      <span>{minTotal.toFixed(1)}%</span>
+                      <span>{maxTotal.toFixed(1)}%</span>
                     </div>
                   </div>
 
