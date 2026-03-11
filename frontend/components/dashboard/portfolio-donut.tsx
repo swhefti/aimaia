@@ -18,6 +18,8 @@ const COLORS = [
   '#14B8A6', '#A855F7', '#3B82F6', '#E11D48', '#D97706',
 ];
 
+const CASH_COLOR = '#6B7280'; // neutral gray — visually distinct from asset colors
+
 export function PortfolioDonut({ positions, cashValue, totalValue, marketPrices = {} }: PortfolioDonutProps) {
   // Compute actual total from positions (using market prices) + cash
   let positionsTotal = 0;
@@ -80,9 +82,11 @@ export function PortfolioDonut({ positions, cashValue, totalValue, marketPrices 
                 dataKey="value"
                 strokeWidth={0}
               >
-                {data.map((_, i) => (
-                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                ))}
+                {data.map((entry, i) => {
+                  if (entry.name === 'Cash') return <Cell key={i} fill={CASH_COLOR} />;
+                  const colorIdx = data.slice(0, i).filter((d) => d.name !== 'Cash').length;
+                  return <Cell key={i} fill={COLORS[colorIdx % COLORS.length]} />;
+                })}
               </Pie>
               <Tooltip
                 contentStyle={{
@@ -98,16 +102,21 @@ export function PortfolioDonut({ positions, cashValue, totalValue, marketPrices 
           </ResponsiveContainer>
         </div>
         <div className="flex-1 space-y-1.5 overflow-hidden">
-          {data.map((d, i) => (
+          {data.map((d, i) => {
+            const color = d.name === 'Cash'
+              ? CASH_COLOR
+              : COLORS[data.slice(0, i).filter((e) => e.name !== 'Cash').length % COLORS.length];
+            return (
             <div key={d.name} className="flex items-center gap-2 text-sm">
               <span
                 className="w-2.5 h-2.5 rounded-full shrink-0"
-                style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                style={{ backgroundColor: color }}
               />
               <span className="text-gray-300 truncate">{d.name}</span>
               <span className="text-gray-500 ml-auto shrink-0">{d.pct.toFixed(1)}%</span>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </Card>
