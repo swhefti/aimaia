@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { ASSET_TYPE_MAP, CRYPTO } from '@shared/lib/constants';
-import { getConfig, getConfigNumber } from '@/lib/config';
+import { getConfig, getConfigNumber, getConfigNumberBatch } from '@/lib/config';
 
 /**
  * POST /api/ticker/refresh
@@ -166,7 +166,21 @@ async function runTechnical(supabase: ReturnType<typeof getServiceSupabase>, tic
     else if (ratio > 1.2 && priceChg < 0) volScore = -0.2;
   }
 
-  const score = clamp(macdScore * 0.30 + emaScore * 0.25 + rsiScore * 0.20 + bollScore * 0.15 + volScore * 0.10, -1, 1);
+  const subWeights = await getConfigNumberBatch({
+    subweight_technical_macd: 0.30,
+    subweight_technical_ema: 0.25,
+    subweight_technical_rsi: 0.20,
+    subweight_technical_bollinger: 0.15,
+    subweight_technical_volume: 0.10,
+  });
+  const score = clamp(
+    macdScore * subWeights.subweight_technical_macd! +
+    emaScore * subWeights.subweight_technical_ema! +
+    rsiScore * subWeights.subweight_technical_rsi! +
+    bollScore * subWeights.subweight_technical_bollinger! +
+    volScore * subWeights.subweight_technical_volume!,
+    -1, 1
+  );
   const signs = [macdScore, emaScore, rsiScore, bollScore, volScore].map(Math.sign);
   const agreeing = signs.filter((s) => s === Math.sign(score)).length;
   let confidence = rows.length >= 200 ? 0.7 : 0.5;

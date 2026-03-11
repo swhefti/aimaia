@@ -43,6 +43,31 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * Find the most recent date that has a meaningful number of agent scores.
+ * Falls back to dateStr itself if no scores exist at all.
+ */
+async function findLatestScoreDate(supabase: SB, dateStr: string): Promise<string> {
+  const MIN_FULL_RUN = 10;
+  const { data: recentRows } = await supabase
+    .from('agent_scores')
+    .select('date')
+    .eq('agent_type', 'technical')
+    .lte('date', dateStr)
+    .order('date', { ascending: false })
+    .limit(500);
+
+  if (!recentRows || recentRows.length === 0) return dateStr;
+
+  const counts: Record<string, number> = {};
+  for (const row of recentRows) {
+    const d = row.date as string;
+    counts[d] = (counts[d] || 0) + 1;
+  }
+  const sortedDates = Object.keys(counts).sort((a, b) => b.localeCompare(a));
+  return sortedDates.find((d) => counts[d]! >= MIN_FULL_RUN) ?? sortedDates[0] ?? dateStr;
+}
+
 // ---- Zod schema for LLM output validation ----
 
 const SynthesisOutputSchema = z.object({
@@ -189,14 +214,17 @@ async function buildContextPackage(
   const hhi = allocations.reduce((sum, a) => sum + a * a, 0);
   const concentrationRisk = clamp(hhi * 2, 0, 1);
 
-  // 5. Load agent scores for portfolio positions + top candidates
+  // 5. Find the most recent date with a full set of scores (falls back to dateStr)
+  const scoreDate = await findLatestScoreDate(supabase, dateStr);
+
+  // Load agent scores for portfolio positions + top candidates
   const allScoreTickers = [...positionTickers];
 
   // Top 5 non-owned assets by technical score
   const { data: topScores } = await supabase
     .from('agent_scores')
     .select('ticker, score')
-    .eq('date', dateStr)
+    .eq('date', scoreDate)
     .eq('agent_type', 'technical')
     .not('ticker', 'in', `(${positionTickers.length > 0 ? positionTickers.join(',') : 'NONE'})`)
     .order('score', { ascending: false })
@@ -217,7 +245,7 @@ async function buildContextPackage(
   const { data: allAgentScores } = await supabase
     .from('agent_scores')
     .select('ticker, agent_type, score, confidence, data_freshness')
-    .eq('date', dateStr)
+    .eq('date', scoreDate)
     .in('ticker', allScoreTickers.length > 0 ? allScoreTickers : ['NONE']);
 
   // Load regime scores
@@ -226,7 +254,7 @@ async function buildContextPackage(
     .select('ticker, score, confidence, component_scores')
     .in('ticker', ['MARKET', 'MARKET_CRYPTO'])
     .eq('agent_type', 'market_regime')
-    .eq('date', dateStr);
+    .eq('date', scoreDate);
 
   const stockRegimeData = regimeRows?.find((r) => r.ticker === 'MARKET') ?? null;
   const cryptoRegimeData = regimeRows?.find((r) => r.ticker === 'MARKET_CRYPTO') ?? null;
@@ -713,7 +741,8 @@ async function runSynthesisForPortfolio(
     .single();
 
   const userAssetTypes = (profileData?.asset_types as AssetType[]) ?? ['stock', 'etf', 'crypto'];
-  const maxDrawdownLimitPct = Number(profileData?.max_drawdown_limit_pct ?? 0.15);
+  const rawDrawdown = Number(profileData?.max_drawdown_limit_pct ?? 15);
+  const maxDrawdownLimitPct = rawDrawdown > 1 ? rawDrawdown / 100 : rawDrawdown;
 
   // Portfolio state for rules engine
   const portfolioState: PortfolioState = {

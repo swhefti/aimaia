@@ -121,8 +121,11 @@ export default function DashboardPage() {
   }, []);
 
   // Fees preference
-  const feesEnabled = typeof window !== 'undefined' && localStorage.getItem('maipa_include_fees') === 'true';
-  const feeMultiplier = feesEnabled ? 0.99 : 1; // 1% fee on buys
+  const [feeMultiplier, setFeeMultiplier] = useState(1);
+  useEffect(() => {
+    const feesEnabled = localStorage.getItem('maipa_include_fees') === 'true';
+    setFeeMultiplier(feesEnabled ? 0.99 : 1);
+  }, []);
 
   // --- AI probability fetcher ---
   const fetchAiProbability = useCallback(async (
@@ -666,9 +669,11 @@ export default function DashboardPage() {
 
     const dateStr = asOfDate ?? new Date().toISOString().split('T')[0]!;
 
+    // Compute dailyPnl from previous valuation before updating state
+    let dailyPnl = 0;
     setValuations((prev) => {
       const prevDayVal = prev.length > 0 ? prev[prev.length - 1]! : undefined;
-      const dailyPnl = prevDayVal && prevDayVal.date !== dateStr
+      dailyPnl = prevDayVal && prevDayVal.date !== dateStr
         ? totalValue - prevDayVal.totalValue
         : 0;
 
@@ -695,7 +700,7 @@ export default function DashboardPage() {
     // Never write to DB in simulation or guest mode
     if (!isGuest) {
       await upsertPortfolioValuation(
-        supabase, portfolioId, totalValue, cashValue, 0, cumulativeReturnPct, goalProbability
+        supabase, portfolioId, totalValue, cashValue, dailyPnl, cumulativeReturnPct, goalProbability
       );
     }
 
@@ -729,11 +734,21 @@ export default function DashboardPage() {
 
     if (item.action === 'BUY' || item.action === 'ADD') {
       // Calculate how much to invest based on target allocation (less fees)
-      const targetValue = (item.targetAllocationPct / 100) * totalValue;
+      // Use live total from positions + cash rather than render-scope totalValue
+      let livePosValue = 0;
+      for (const p of updatedPositions) {
+        livePosValue += p.quantity * (allPrices[p.ticker] ?? p.avgPurchasePrice);
+      }
+      const liveTotalValue = livePosValue + (newCash ?? 0);
+      const targetValue = (item.targetAllocationPct / 100) * liveTotalValue;
       const existingValue = existingIdx >= 0
         ? updatedPositions[existingIdx]!.quantity * currentPrice
         : 0;
-      const investAmount = Math.max(0, targetValue - existingValue) * feeMultiplier;
+      let investAmount = Math.max(0, targetValue - existingValue) * feeMultiplier;
+      // Cap to available cash
+      if (cashBalance != null) {
+        investAmount = Math.min(investAmount, cashBalance);
+      }
       const quantity = investAmount / currentPrice;
 
       if (quantity > 0) {
@@ -799,7 +814,12 @@ export default function DashboardPage() {
       // Reduce position to target allocation — add freed value to cash
       if (existingIdx >= 0) {
         const existing = updatedPositions[existingIdx]!;
-        const targetValue = (item.targetAllocationPct / 100) * totalValue;
+        let reducePosValue = 0;
+        for (const p of updatedPositions) {
+          reducePosValue += p.quantity * (allPrices[p.ticker] ?? p.avgPurchasePrice);
+        }
+        const reduceTotalValue = reducePosValue + (newCash ?? 0);
+        const targetValue = (item.targetAllocationPct / 100) * reduceTotalValue;
         const newQuantity = Math.max(0, targetValue / currentPrice);
         const soldQuantity = existing.quantity - newQuantity;
         const proceeds = soldQuantity * currentPrice;
