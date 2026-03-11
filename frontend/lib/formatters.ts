@@ -131,13 +131,13 @@ export function computeGoalProbability(opts: {
     positionCount = 0,
     maxPositions = 10,
     riskProfile = 'balanced',
-    sigmoidMidpoint = 0.08,
-    sigmoidSteepness = 12,
-    aiScoreWeight = 8,
-    progressBonusMax = 10,
+    sigmoidMidpoint = 0.10,
+    sigmoidSteepness = 6,
+    aiScoreWeight = 4,
+    progressBonusMax = 8,
     diversificationBonusMax = 3,
-    timeBonusMax = 5,
-    noPositionsCap = 35,
+    timeBonusMax = 4,
+    noPositionsCap = 40,
   } = opts;
 
   // 1. Progress factor: how far along are we toward the goal?
@@ -151,26 +151,26 @@ export function computeGoalProbability(opts: {
     ? (remainingNeeded / monthsRemaining) * 12
     : (remainingNeeded <= 0 ? -1 : 1);
 
-  // 3. Base probability from sigmoid
+  // 3. Base probability from sigmoid (smoother curve)
   const sigmoid = 1 / (1 + Math.exp(sigmoidSteepness * (annualizedNeeded - sigmoidMidpoint)));
   let baseProbability = sigmoid * 100;
 
-  // 4. Progress bonus
+  // 4. Progress bonus (ahead of schedule)
   if (progressRatio > 0 && monthsRemaining > 0) {
     const elapsedRatio = Math.max(0, 1 - (monthsRemaining / Math.max(monthsRemaining + 1, 12)));
-    if (progressRatio > elapsedRatio && progressRatio > 0) {
-      const bonus = Math.min(progressBonusMax, (progressRatio - elapsedRatio) * 20);
+    if (progressRatio > elapsedRatio) {
+      const bonus = Math.min(progressBonusMax, (progressRatio - elapsedRatio) * 15);
       baseProbability += bonus;
     }
   }
 
-  // 5. AI score momentum
+  // 5. AI score momentum (dampened to avoid daily volatility)
   if (avgCompositeScore !== undefined) {
     const scoreFactor = avgCompositeScore * aiScoreWeight;
     baseProbability += scoreFactor;
   }
 
-  // 6. Diversification factor
+  // 6. Diversification factor (smooth ramp instead of hard cap)
   if (positionCount === 0 && goalReturn > 0) {
     baseProbability = Math.min(baseProbability, noPositionsCap);
   } else if (positionCount > 0) {
@@ -180,14 +180,14 @@ export function computeGoalProbability(opts: {
 
   // 7. Risk profile adjustment
   if (riskProfile === 'aggressive' && annualizedNeeded > 0.05) {
-    baseProbability += 3;
-  } else if (riskProfile === 'conservative' && annualizedNeeded < 0.05) {
     baseProbability += 2;
+  } else if (riskProfile === 'conservative' && annualizedNeeded < 0.05) {
+    baseProbability += 1.5;
   }
 
-  // 8. Time factor
+  // 8. Time factor (more time = more chance to recover)
   if (monthsRemaining > 12 && remainingNeeded > 0) {
-    baseProbability += Math.min(timeBonusMax, (monthsRemaining - 12) / 12 * 2);
+    baseProbability += Math.min(timeBonusMax, (monthsRemaining - 12) / 12 * 1.5);
   }
 
   return Math.round(Math.min(99, Math.max(1, baseProbability)) * 10) / 10;

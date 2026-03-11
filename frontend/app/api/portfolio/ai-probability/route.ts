@@ -59,7 +59,10 @@ The probability must be between 0 and 100. The reasoning should be 1-2 sentences
     return `  ${p.ticker}: ${p.allocationPct.toFixed(1)}% allocation, avg cost $${p.avgPurchasePrice.toFixed(2)}, current $${p.currentPrice.toFixed(2)}, P&L ${pnl}`;
   }).join('\n');
 
-  const user = `GOAL: ${(data.goalReturnPct * 100).toFixed(1)}% return in ${data.timeHorizonMonths} months
+  const annualizedGoal = data.timeHorizonMonths > 0
+    ? (Math.pow(1 + data.goalReturnPct, 12 / data.timeHorizonMonths) - 1) * 100
+    : 0;
+  const user = `GOAL: ${(data.goalReturnPct * 100).toFixed(1)}% total return over ${data.timeHorizonMonths} months (~${annualizedGoal.toFixed(1)}% annualized)
 RISK PROFILE: ${data.riskProfile}
 
 PORTFOLIO:
