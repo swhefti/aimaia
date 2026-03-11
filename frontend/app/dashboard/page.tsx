@@ -377,9 +377,30 @@ export default function DashboardPage() {
       setAllQuotes(quotes);
 
       if (!userPortfolio) {
+        // Retry once — onboarding may have just created the portfolio and the
+        // initial fetch ran before the row was visible (RLS / replication lag).
+        await new Promise((r) => setTimeout(r, 500));
+        const retryPortfolio = await getPortfolio(supabase, user.id);
+        if (retryPortfolio) {
+          // Found it on retry — reload the full dashboard with it
+          setPortfolio(retryPortfolio);
+          const [pos, vals, recRun, dbCash] = await Promise.all([
+            getPortfolioPositions(supabase, retryPortfolio.id),
+            getPortfolioValuations(supabase, retryPortfolio.id, 30),
+            getLatestRecommendationRun(supabase, retryPortfolio.id),
+            getCashBalance(supabase, retryPortfolio.id),
+          ]);
+          setPositions(pos);
+          setRun(recRun);
+          setCashBalanceState(dbCash);
+          if (vals.length > 0) setValuations(vals);
+          setLoading(false);
+          return;
+        }
+
+        // Still not found — create one (user may have skipped onboarding)
         try {
           const newId = await createPortfolio(supabase, user.id, 'My Portfolio');
-          // Initialize cash_balance to investment capital
           await setCashBalance(supabase, newId, userProfile.investmentCapital);
           setCashBalanceState(userProfile.investmentCapital);
 
