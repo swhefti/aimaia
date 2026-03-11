@@ -442,7 +442,7 @@ export default function OnboardingPage() {
           ...profileData,
         }));
       } else {
-        // Save profile — retry once if first attempt fails
+        // Save profile — required before portfolio creation (FK constraint)
         try {
           await upsertUserProfile(supabase, user.id, profileData);
         } catch {
@@ -452,6 +452,10 @@ export default function OnboardingPage() {
             await upsertUserProfile(supabase, user.id, profileData);
           } catch (retryErr) {
             console.error('Profile save failed after retry:', retryErr);
+            setCalcError('Could not save your profile. Please try again.');
+            setSaving(false);
+            setCalculating(false);
+            return;
           }
         }
       }

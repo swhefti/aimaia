@@ -554,17 +554,32 @@ export async function getAllLatestScores(
   supabase: SupabaseClient,
   asOfDate?: string
 ): Promise<Record<string, number>> {
-  // Find latest date with technical scores (full pipeline run)
-  let dateQuery = supabase
+  // Find the latest date with a full pipeline run (many technical scores).
+  // A single-ticker refresh may create a few scores on today's date, but that
+  // should not shadow the last bulk run.
+  const MIN_FULL_RUN = 10;
+
+  let recentQuery = supabase
     .from('agent_scores')
     .select('date')
     .eq('agent_type', 'technical')
     .order('date', { ascending: false })
-    .limit(1);
-  if (asOfDate) dateQuery = dateQuery.lte('date', asOfDate);
+    .limit(500);
+  if (asOfDate) recentQuery = recentQuery.lte('date', asOfDate);
 
-  const { data: latestRow } = await dateQuery;
-  const latestDate = latestRow?.[0]?.date as string | undefined;
+  const { data: recentRows } = await recentQuery;
+  let latestDate: string | undefined;
+
+  if (recentRows && recentRows.length > 0) {
+    const counts: Record<string, number> = {};
+    for (const row of recentRows) {
+      const d = row.date as string;
+      counts[d] = (counts[d] || 0) + 1;
+    }
+    const sortedDates = Object.keys(counts).sort((a, b) => b.localeCompare(a));
+    latestDate = sortedDates.find((d) => counts[d]! >= MIN_FULL_RUN) ?? sortedDates[0];
+  }
+
   if (!latestDate) return {};
 
   // Get base scores from full pipeline date
