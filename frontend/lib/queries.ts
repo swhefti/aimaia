@@ -64,15 +64,20 @@ export async function upsertUserProfile(
 // ---------- Portfolio ----------
 
 export async function getPortfolio(supabase: SupabaseClient, userId: string): Promise<Portfolio | null> {
-  const { data, error } = await supabase
+  // Fetch all active portfolios — if duplicates exist, prefer the one with positions
+  const { data: allActive, error } = await supabase
     .from('portfolios')
-    .select('*')
+    .select('*, portfolio_positions(id)')
     .eq('user_id', userId)
     .eq('status', 'active')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single();
-  if (error || !data) return null;
+    .order('created_at', { ascending: false });
+  if (error || !allActive || allActive.length === 0) return null;
+
+  // Prefer portfolio that has positions; otherwise fall back to newest
+  const withPositions = allActive.find(
+    (p) => Array.isArray(p.portfolio_positions) && p.portfolio_positions.length > 0
+  );
+  const data = withPositions ?? allActive[0]!;
   return {
     id: data.id,
     userId: data.user_id,
@@ -87,11 +92,34 @@ export async function createPortfolio(
   userId: string,
   name: string
 ): Promise<string> {
+  // Check for existing active portfolio first to prevent duplicates
+  const { data: existing } = await supabase
+    .from('portfolios')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+  if (existing) return existing.id;
+
   const { data, error } = await supabase
     .from('portfolios')
     .insert({ user_id: userId, name, status: 'active' })
     .select('id')
     .single();
+
+  // Handle unique constraint violation (idx_one_active_portfolio_per_user)
+  if (error?.code === '23505') {
+    const { data: fallback } = await supabase
+      .from('portfolios')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .limit(1)
+      .single();
+    if (fallback) return fallback.id;
+  }
   if (error || !data) throw error || new Error('Failed to create portfolio');
   return data.id;
 }

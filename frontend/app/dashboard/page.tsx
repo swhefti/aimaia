@@ -39,7 +39,6 @@ import {
   getAllQuotes,
   getLatestPrices,
   upsertPortfolioValuation,
-  createPortfolio,
   getDecidedRecommendationIds,
 } from '@/lib/queries';
 import type { UserProfile, Portfolio, PortfolioValuation } from '@shared/types/portfolio';

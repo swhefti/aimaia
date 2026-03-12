@@ -11,7 +11,6 @@ import {
   getAllLatestPrices,
   getAllLatestScores,
   createPortfolio,
-  getPortfolio,
   addPortfolioPosition,
   upsertPortfolioValuation,
   setCashBalance,
@@ -477,25 +476,20 @@ export default function OnboardingPage() {
       }
 
       // Create portfolio upfront so positions can be saved immediately on approve
+      // createPortfolio returns existing active portfolio if one already exists
       if (!isGuest) {
-        // First check if an active portfolio already exists
-        const existing = await getPortfolio(supabase, user.id);
-        if (existing) {
-          portfolioIdRef.current = existing.id;
-        } else {
+        try {
+          const portfolioId = await createPortfolio(supabase, user.id, 'My Portfolio');
+          portfolioIdRef.current = portfolioId;
+        } catch (createErr) {
+          console.error('Failed to create portfolio:', createErr);
+          // Retry once after short delay
           try {
-            const newPortfolioId = await createPortfolio(supabase, user.id, 'My Portfolio');
-            portfolioIdRef.current = newPortfolioId;
-          } catch (createErr) {
-            console.error('Failed to create portfolio:', createErr);
-            // Retry once after short delay
-            try {
-              await new Promise((r) => setTimeout(r, 500));
-              const retryId = await createPortfolio(supabase, user.id, 'My Portfolio');
-              portfolioIdRef.current = retryId;
-            } catch (retryErr) {
-              console.error('Portfolio creation retry failed:', retryErr);
-            }
+            await new Promise((r) => setTimeout(r, 500));
+            const retryId = await createPortfolio(supabase, user.id, 'My Portfolio');
+            portfolioIdRef.current = retryId;
+          } catch (retryErr) {
+            console.error('Portfolio creation retry failed:', retryErr);
           }
         }
 
@@ -732,11 +726,9 @@ export default function OnboardingPage() {
                                 max_positions: 8,
                               }, { onConflict: 'user_id' });
 
-                            const existing = await getPortfolio(supabase, user.id);
-                            if (!existing) {
-                              const newId = await createPortfolio(supabase, user.id, 'My Portfolio');
-                              await setCashBalance(supabase, newId, DEFAULT_CAPITAL);
-                            }
+                            // createPortfolio returns existing active portfolio if one exists
+                            const portfolioId = await createPortfolio(supabase, user.id, 'My Portfolio');
+                            await setCashBalance(supabase, portfolioId, DEFAULT_CAPITAL);
                           } catch (err) {
                             console.error('Skip setup error:', err);
                           }
