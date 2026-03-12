@@ -671,7 +671,20 @@ export default function OnboardingPage() {
 
 
   return (
-    <main className="flex items-center justify-center min-h-screen px-4 py-8">
+    <div className="min-h-screen w-full bg-[#0F2036] relative">
+      <div
+        className="fixed inset-0 z-0"
+        style={{
+          backgroundImage: `
+            linear-gradient(to right, #152a45 1px, transparent 1px),
+            linear-gradient(to bottom, #152a45 1px, transparent 1px)
+          `,
+          backgroundSize: '20px 30px',
+          WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+          maskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+        }}
+      />
+    <main className="flex items-center justify-center min-h-screen px-4 py-8 relative z-10">
       <div className="w-full max-w-lg">
         {!showRecommendations ? (
           <>
@@ -1303,5 +1316,6 @@ export default function OnboardingPage() {
         )}
       </div>
     </main>
+    </div>
   );
 }
