@@ -24,6 +24,6 @@ jobs:
             echo "Running synthesis for portfolio $id"
             curl -f -X GET "https://aimaia.vercel.app/api/cron/synthesis?portfolioId=$id" \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-              --max-time 55
+              --max-time 290
             echo ""
           done
