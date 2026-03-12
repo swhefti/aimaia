@@ -1036,9 +1036,21 @@ export default function DashboardPage() {
     : 50;
 
   return (
-    <>
+    <div className="min-h-screen w-full bg-[#0F2036] relative">
+      <div
+        className="absolute inset-0 z-0"
+        style={{
+          backgroundImage: `
+            linear-gradient(to right, #112238 1px, transparent 1px),
+            linear-gradient(to bottom, #112238 1px, transparent 1px)
+          `,
+          backgroundSize: '20px 30px',
+          WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+          maskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+        }}
+      />
       <SimulationBanner />
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="max-w-7xl mx-auto px-4 py-6 relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -1337,6 +1349,6 @@ export default function DashboardPage() {
           />
         )}
       </main>
-    </>
+    </div>
   );
 }

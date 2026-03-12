@@ -116,7 +116,20 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="max-w-lg mx-auto px-4 py-6">
+    <div className="min-h-screen w-full bg-[#0F2036] relative">
+      <div
+        className="absolute inset-0 z-0"
+        style={{
+          backgroundImage: `
+            linear-gradient(to right, #112238 1px, transparent 1px),
+            linear-gradient(to bottom, #112238 1px, transparent 1px)
+          `,
+          backgroundSize: '20px 30px',
+          WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+          maskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+        }}
+      />
+    <main className="max-w-lg mx-auto px-4 py-6 relative z-10">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
         <Link
@@ -314,5 +327,6 @@ export default function SettingsPage() {
         )}
       </div>
     </main>
+    </div>
   );
 }
