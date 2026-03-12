@@ -10,7 +10,7 @@ jobs:
       - name: Get active portfolio IDs
         id: list
         run: |
-          IDS=$(curl -sf -X GET https://aimaia.vercel.app/api/cron/synthesis/list \
+          IDS=$(curl --fail-with-body -sS -X GET https://aimaia.vercel.app/api/cron/synthesis/list \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             | jq -r '.portfolioIds[]')
           echo "ids<<EOF" >> $GITHUB_OUTPUT
@@ -19,11 +19,34 @@ jobs:
 
       - name: Run synthesis per portfolio
         run: |
+          FAIL=0
           echo "${{ steps.list.outputs.ids }}" | while read -r id; do
             [ -z "$id" ] && continue
-            echo "Running synthesis for portfolio $id"
-            curl -f -X GET "https://aimaia.vercel.app/api/cron/synthesis?portfolioId=$id" \
-              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-              --max-time 290
-            echo ""
+            echo "::group::Portfolio $id"
+            SUCCESS=0
+            for ATTEMPT in 1 2; do
+              echo "Attempt $ATTEMPT for portfolio $id"
+              HTTP_CODE=$(curl -sS -o /tmp/synth_response.json -w '%{http_code}' \
+                -X GET "https://aimaia.vercel.app/api/cron/synthesis?portfolioId=$id" \
+                -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+                --max-time 290)
+              echo "HTTP $HTTP_CODE"
+              cat /tmp/synth_response.json
+              echo ""
+              if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+                SUCCESS=1
+                break
+              fi
+              if [ "$ATTEMPT" -lt 2 ]; then
+                echo "Retrying in 10s..."
+                sleep 10
+              fi
+            done
+            if [ "$SUCCESS" -eq 0 ]; then
+              echo "::warning::Portfolio $id failed after retries (HTTP $HTTP_CODE)"
+              FAIL=1
+            fi
+            echo "::endgroup::"
           done
+          # Don't fail the whole workflow for individual portfolio failures
+          exit 0

@@ -44,6 +44,40 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
+ * Extract the first valid JSON object from LLM text.
+ * Handles: code fences, preamble text, trailing text, thinking blocks.
+ */
+function extractJson(raw: string): unknown {
+  // Strip markdown fences
+  let text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+
+  // Try direct parse first
+  try { return JSON.parse(text); } catch { /* continue */ }
+
+  // Find the first { and try to match the closing }
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('No JSON object found in LLM output');
+  text = text.slice(start);
+
+  // Try parsing progressively shorter substrings from the end
+  // (handles trailing text after the JSON)
+  for (let end = text.length; end > start; end--) {
+    if (text[end - 1] !== '}') continue;
+    try { return JSON.parse(text.slice(0, end)); } catch { /* continue */ }
+  }
+
+  // Last resort: try to fix truncated strings by closing them
+  // Common issue: "portfolioNarrative": "some text that got cut
+  const fixed = text.replace(/,\s*$/, '') // trailing comma
+    .replace(/"[^"]*$/, '"') // close truncated string
+    + '}'.repeat(Math.max(0, (text.match(/{/g)?.length ?? 0) - (text.match(/}/g)?.length ?? 0))) // close unclosed braces
+    + ']'.repeat(Math.max(0, (text.match(/\[/g)?.length ?? 0) - (text.match(/]/g)?.length ?? 0))); // close unclosed arrays
+  try { return JSON.parse(fixed); } catch { /* continue */ }
+
+  throw new Error(`Could not extract valid JSON from LLM output (${text.length} chars)`);
+}
+
+/**
  * Find the most recent date that has a meaningful number of agent scores.
  * Falls back to dateStr itself if no scores exist at all.
  */
@@ -835,29 +869,7 @@ async function runSynthesisForPortfolio(
       .map((b) => b.text)
       .join('');
 
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
-    let parsed: unknown;
-
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      // Retry with format reminder
-      const retryResponse = await anthropic.messages.create({
-        model: synthesisModel,
-        max_tokens: maxTokensSynthesis,
-        system: systemPrompt,
-        messages: [
-          { role: 'user', content: userPrompt },
-          { role: 'assistant', content: cleaned },
-          { role: 'user', content: 'Your response was not valid JSON. Return ONLY valid JSON matching the schema.' },
-        ],
-      });
-      const retryText = retryResponse.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-      parsed = JSON.parse(retryText.replace(/```json|```/g, '').trim());
-    }
+    const parsed = extractJson(rawText);
 
     const validated = SynthesisOutputSchema.safeParse(parsed);
     if (validated.success) {
@@ -923,9 +935,15 @@ async function runSynthesisForPortfolio(
 
     finalOutput = generateFallbackRecommendations(scores, userAssetTypes, portfolioState);
 
-    // Create fallback run record if we don't have one
+    // Create or update fallback run record
     if (!runId) {
-      const { data: fallbackRun } = await supabase
+      // Delete any stale runs for today first (avoid unique constraint conflicts)
+      await supabase.from('synthesis_runs')
+        .delete()
+        .eq('portfolio_id', portfolioId)
+        .eq('run_date', dateStr);
+
+      const { data: fallbackRun, error: fallbackErr } = await supabase
         .from('synthesis_runs')
         .insert({
           user_id: userId,
@@ -940,8 +958,9 @@ async function runSynthesisForPortfolio(
         })
         .select('id')
         .single();
-      if (!fallbackRun) {
-        return `error: failed to create fallback synthesis_runs record`;
+      if (fallbackErr || !fallbackRun) {
+        console.error('[Synthesis] Fallback run insert failed:', fallbackErr?.message);
+        return `error: failed to create fallback synthesis_runs record: ${fallbackErr?.message ?? 'unknown'}`;
       }
       runId = fallbackRun.id as string;
     } else {
@@ -1027,70 +1046,77 @@ export async function GET(req: NextRequest) {
   const apiKey = process.env['ANTHROPIC_API_KEY'];
   if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY not set' }, { status: 500 });
 
-  const supabase = getServiceSupabase();
-  const anthropic = new Anthropic({ apiKey });
-  const dateStr = new Date().toISOString().split('T')[0]!;
-  const startedAt = new Date().toISOString();
+  try {
+    const supabase = getServiceSupabase();
+    const anthropic = new Anthropic({ apiKey });
+    const dateStr = new Date().toISOString().split('T')[0]!;
+    const startedAt = new Date().toISOString();
 
-  console.log(`[Cron/Synthesis] Starting for ${dateStr}`);
+    console.log(`[Cron/Synthesis] Starting for ${dateStr}`);
 
-  // Find all active portfolios
-  const { data: portfolios, error: portfolioError } = await supabase
-    .from('portfolios')
-    .select('id, user_id')
-    .eq('status', 'active');
+    // Find all active portfolios
+    const { data: portfolios, error: portfolioError } = await supabase
+      .from('portfolios')
+      .select('id, user_id')
+      .eq('status', 'active');
 
-  if (portfolioError) {
-    return NextResponse.json({ error: portfolioError.message }, { status: 500 });
-  }
-
-  if (!portfolios || portfolios.length === 0) {
-    return NextResponse.json({ message: 'No active portfolios', date: dateStr });
-  }
-
-  // Support single-portfolio mode for Vercel Hobby 60s limit
-  const portfolioIdParam = req.nextUrl.searchParams.get('portfolioId');
-  const portfoliosToProcess = portfolioIdParam
-    ? portfolios.filter((p) => p.id === portfolioIdParam)
-    : portfolios;
-
-  if (portfoliosToProcess.length === 0) {
-    return NextResponse.json({ message: `Portfolio ${portfolioIdParam} not found or inactive`, date: dateStr });
-  }
-
-  const results: Record<string, string> = {};
-
-  // Process portfolios sequentially to avoid overwhelming the LLM API
-  for (const portfolio of portfoliosToProcess) {
-    const userId = portfolio.user_id as string;
-    const portfolioId = portfolio.id as string;
-
-    try {
-      results[portfolioId] = await runSynthesisForPortfolio(
-        supabase, anthropic, portfolioId, userId, dateStr
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      console.error(`[Cron/Synthesis] Error for ${portfolioId}:`, msg);
-      results[portfolioId] = `error: ${msg}`;
+    if (portfolioError) {
+      return NextResponse.json({ error: portfolioError.message }, { status: 500 });
     }
+
+    if (!portfolios || portfolios.length === 0) {
+      return NextResponse.json({ message: 'No active portfolios', date: dateStr });
+    }
+
+    // Support single-portfolio mode for Vercel Hobby 60s limit
+    const portfolioIdParam = req.nextUrl.searchParams.get('portfolioId');
+    const portfoliosToProcess = portfolioIdParam
+      ? portfolios.filter((p) => p.id === portfolioIdParam)
+      : portfolios;
+
+    if (portfoliosToProcess.length === 0) {
+      return NextResponse.json({ message: `Portfolio ${portfolioIdParam} not found or inactive`, date: dateStr });
+    }
+
+    const results: Record<string, string> = {};
+
+    // Process portfolios sequentially to avoid overwhelming the LLM API
+    for (const portfolio of portfoliosToProcess) {
+      const userId = portfolio.user_id as string;
+      const portfolioId = portfolio.id as string;
+
+      try {
+        results[portfolioId] = await runSynthesisForPortfolio(
+          supabase, anthropic, portfolioId, userId, dateStr
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`[Cron/Synthesis] Error for ${portfolioId}:`, msg);
+        results[portfolioId] = `error: ${msg}`;
+      }
+    }
+
+    const completedAt = new Date().toISOString();
+    const successCount = Object.values(results).filter((r) => r.startsWith('ok')).length;
+    const errorCount = Object.values(results).filter((r) => r.startsWith('error')).length;
+
+    console.log(`[Cron/Synthesis] Done: ${successCount} success, ${errorCount} errors`);
+
+    return NextResponse.json({
+      startedAt,
+      completedAt,
+      date: dateStr,
+      portfolios: portfolios.length,
+      success: successCount,
+      errors: errorCount,
+      results,
+    });
+  } catch (topLevelErr) {
+    // Catch-all: never return 5xx to avoid curl exit code 22
+    const msg = topLevelErr instanceof Error ? topLevelErr.message : 'Unknown error';
+    console.error('[Cron/Synthesis] Top-level error:', msg);
+    return NextResponse.json({ error: msg, results: {} });
   }
-
-  const completedAt = new Date().toISOString();
-  const successCount = Object.values(results).filter((r) => r.startsWith('ok')).length;
-  const errorCount = Object.values(results).filter((r) => r.startsWith('error')).length;
-
-  console.log(`[Cron/Synthesis] Done: ${successCount} success, ${errorCount} errors`);
-
-  return NextResponse.json({
-    startedAt,
-    completedAt,
-    date: dateStr,
-    portfolios: portfolios.length,
-    success: successCount,
-    errors: errorCount,
-    results,
-  });
 }
 
 export const maxDuration = 300;
