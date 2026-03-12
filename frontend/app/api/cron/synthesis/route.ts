@@ -1048,10 +1048,20 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ message: 'No active portfolios', date: dateStr });
   }
 
+  // Support single-portfolio mode for Vercel Hobby 60s limit
+  const portfolioIdParam = req.nextUrl.searchParams.get('portfolioId');
+  const portfoliosToProcess = portfolioIdParam
+    ? portfolios.filter((p) => p.id === portfolioIdParam)
+    : portfolios;
+
+  if (portfoliosToProcess.length === 0) {
+    return NextResponse.json({ message: `Portfolio ${portfolioIdParam} not found or inactive`, date: dateStr });
+  }
+
   const results: Record<string, string> = {};
 
   // Process portfolios sequentially to avoid overwhelming the LLM API
-  for (const portfolio of portfolios) {
+  for (const portfolio of portfoliosToProcess) {
     const userId = portfolio.user_id as string;
     const portfolioId = portfolio.id as string;
 

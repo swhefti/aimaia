@@ -7,7 +7,23 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger synthesis agent
+      - name: Get active portfolio IDs
+        id: list
         run: |
-          curl -f -X GET https://aimaia.vercel.app/api/cron/synthesis \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          IDS=$(curl -sf -X GET https://aimaia.vercel.app/api/cron/synthesis/list \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            | jq -r '.portfolioIds[]')
+          echo "ids<<EOF" >> $GITHUB_OUTPUT
+          echo "$IDS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run synthesis per portfolio
+        run: |
+          echo "${{ steps.list.outputs.ids }}" | while read -r id; do
+            [ -z "$id" ] && continue
+            echo "Running synthesis for portfolio $id"
+            curl -f -X GET "https://aimaia.vercel.app/api/cron/synthesis?portfolioId=$id" \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              --max-time 55
+            echo ""
+          done
