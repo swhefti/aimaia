@@ -701,7 +701,7 @@ export default function OnboardingPage() {
                       Welcome {user?.user_metadata?.full_name ? user.user_metadata.full_name.split(' ')[0] : ''}
                     </h1>
                     <p className="text-gray-400 mt-3 leading-relaxed max-w-md mx-auto">
-                      aiMAIA is your AI-powered portfolio advisor. It analyzes 100 assets daily and delivers personalized recommendations based on your goals and risk tolerance.
+                      aiMAIA (prototype) is your AI-powered portfolio advisor. It analyzes 100 assets daily and delivers personalized recommendations based on your goals and risk tolerance.
                     </p>
                   </div>
                   <div className="flex flex-col items-center gap-3 pt-2">
