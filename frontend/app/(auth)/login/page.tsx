@@ -94,8 +94,20 @@ function LoginPageInner() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen flex items-center justify-center bg-white px-4 relative">
+      <div
+        className="fixed inset-0 z-0"
+        style={{
+          backgroundImage: `
+            linear-gradient(to right, #e5e7eb 1px, transparent 1px),
+            linear-gradient(to bottom, #e5e7eb 1px, transparent 1px)
+          `,
+          backgroundSize: '20px 30px',
+          WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+          maskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
+        }}
+      />
+      <div className="w-full max-w-sm relative z-10">
 
         <div className="text-center mb-8">
           <Logo size="lg" variant="light" showSubtitle />
