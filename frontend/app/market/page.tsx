@@ -281,7 +281,7 @@ export default function MarketPage() {
             linear-gradient(to right, #152a45 1px, transparent 1px),
             linear-gradient(to bottom, #152a45 1px, transparent 1px)
           `,
-          backgroundSize: '20px 30px',
+          backgroundSize: '38px 15px',
           WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
           maskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
         }}
