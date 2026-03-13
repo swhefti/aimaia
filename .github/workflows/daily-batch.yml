@@ -1,0 +1,71 @@
+name: Daily Batch Pipeline
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+env:
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+  FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+jobs:
+  prices:
+    name: Ingest Prices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run price ingestion
+        run: npx tsx backend/jobs/prices.ts
+        timeout-minutes: 30
+
+  news:
+    name: Ingest News
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run news ingestion
+        run: npx tsx backend/jobs/news.ts
+        timeout-minutes: 10
+
+  scores:
+    name: Run Scoring Agents
+    needs: [prices, news]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run scoring pipeline
+        run: npx tsx backend/jobs/scores.ts
+        timeout-minutes: 20
+
+  synthesis:
+    name: Run Synthesis
+    needs: [scores]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run synthesis
+        run: npx tsx backend/jobs/synthesis.ts
+        timeout-minutes: 15

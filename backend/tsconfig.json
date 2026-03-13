@@ -19,7 +19,8 @@
   },
   "include": [
     "../shared/**/*",
-    "pipeline/**/*"
+    "pipeline/**/*",
+    "jobs/**/*"
   ],
   "exclude": ["node_modules", "dist"]
 }

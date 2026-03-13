@@ -1,0 +1,25 @@
+name: Crypto Price Refresh
+on:
+  schedule:
+    - cron: '0 1,5,9,13,17 * * *'
+  workflow_dispatch:
+
+env:
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+
+jobs:
+  crypto:
+    name: Ingest Crypto Prices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run crypto price ingestion
+        run: npx tsx backend/jobs/crypto-prices.ts
+        timeout-minutes: 10
