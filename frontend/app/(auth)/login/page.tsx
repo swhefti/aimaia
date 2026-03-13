@@ -99,10 +99,10 @@ function LoginPageInner() {
         className="fixed inset-0 z-0"
         style={{
           backgroundImage: `
-            linear-gradient(to right, #e5e7eb 1px, transparent 1px),
-            linear-gradient(to bottom, #e5e7eb 1px, transparent 1px)
+            linear-gradient(to right, #f0f0f0 1px, transparent 1px),
+            linear-gradient(to bottom, #f0f0f0 1px, transparent 1px)
           `,
-          backgroundSize: '20px 30px',
+          backgroundSize: '38px 15px',
           WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
           maskImage: 'radial-gradient(ellipse 70% 60% at 50% 0%, #000 60%, transparent 100%)',
         }}
