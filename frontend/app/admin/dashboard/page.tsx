@@ -282,14 +282,14 @@ export default function AdminDashboardPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0a0e1a] flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center">
         <p className="text-gray-400">Loading configuration...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0e1a] flex">
+    <div className="min-h-screen flex">
       {/* Sidebar */}
       <aside className="w-56 border-r border-gray-800 p-4 flex-shrink-0">
         <h1 className="text-lg font-bold text-white mb-6">Admin</h1>
@@ -326,6 +326,14 @@ export default function AdminDashboardPage() {
               Other
             </button>
           )}
+          <div className="mt-6 pt-4 border-t border-gray-800">
+            <a
+              href="/admin/data-flow"
+              className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+            >
+              Data Flow Diagram
+            </a>
+          </div>
         </nav>
       </aside>
 
@@ -403,7 +411,7 @@ function ConfigField({
   const updatedStr = new Date(item.updated_at).toLocaleString();
 
   return (
-    <div className={`p-4 rounded-lg border ${isChanged ? 'border-amber-500/50 bg-amber-500/5' : 'border-gray-800 bg-[#131825]'}`}>
+    <div className={`p-4 rounded-lg border ${isChanged ? 'border-amber-500/50 bg-amber-500/5' : 'border-gray-800 bg-[#282c35]'}`}>
       <div className="flex items-start justify-between mb-2">
         <div>
           <label className="text-sm font-medium text-white">{item.label}</label>
@@ -418,7 +426,7 @@ function ConfigField({
         <select
           value={displayValue}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full px-3 py-2 bg-[#0a0e1a] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+          className="w-full px-3 py-2 bg-[#15171d] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
         >
           {MODEL_OPTIONS.map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
@@ -429,7 +437,7 @@ function ConfigField({
           value={displayValue}
           onChange={(e) => onChange(e.target.value)}
           rows={12}
-          className="w-full px-3 py-2 bg-[#0a0e1a] border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-blue-500 resize-y"
+          className="w-full px-3 py-2 bg-[#15171d] border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-blue-500 resize-y"
         />
       ) : item.type === 'number' ? (
         <input
@@ -437,14 +445,14 @@ function ConfigField({
           value={displayValue}
           onChange={(e) => onChange(e.target.value)}
           step={getNumberStep(item.key)}
-          className="w-full px-3 py-2 bg-[#0a0e1a] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+          className="w-full px-3 py-2 bg-[#15171d] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
         />
       ) : (
         <input
           type="text"
           value={displayValue}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full px-3 py-2 bg-[#0a0e1a] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+          className="w-full px-3 py-2 bg-[#15171d] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
         />
       )}
 

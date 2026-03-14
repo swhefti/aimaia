@@ -37,7 +37,7 @@ export default function AdminLoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0e1a] flex items-center justify-center px-4">
+    <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <h1 className="text-2xl font-bold text-white text-center mb-8">Admin Panel</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -47,7 +47,7 @@ export default function AdminLoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 bg-[#131825] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2 bg-[#282c35] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
               required
             />
           </div>
@@ -57,7 +57,7 @@ export default function AdminLoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 bg-[#131825] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2 bg-[#282c35] border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
               required
             />
           </div>

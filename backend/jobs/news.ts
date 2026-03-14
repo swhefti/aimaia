@@ -42,17 +42,37 @@ function matchCryptoTickers(headline: string, summary: string | null): string[] 
   return matched;
 }
 
+class FinnhubAuthError extends Error {
+  constructor(status: number) { super(`Finnhub auth failure (HTTP ${status})`); this.name = 'FinnhubAuthError'; }
+}
+
+class FinnhubRequestError extends Error {
+  constructor(status: number, path: string) { super(`Finnhub HTTP ${status} for ${path}`); this.name = 'FinnhubRequestError'; }
+}
+
 async function finnhubGet(path: string, params: Record<string, string>, apiKey: string): Promise<FinnhubNewsItem[]> {
   const qs = new URLSearchParams({ ...params, token: apiKey }).toString();
   const resp = await fetch(`${FINNHUB_BASE}${path}?${qs}`, { signal: AbortSignal.timeout(30_000) });
+
+  // Auth failures: fail fast, no point continuing
+  if (resp.status === 401 || resp.status === 403) {
+    throw new FinnhubAuthError(resp.status);
+  }
+
   if (resp.status === 429) {
     await sleep(5_000);
     const retry = await fetch(`${FINNHUB_BASE}${path}?${qs}`, { signal: AbortSignal.timeout(30_000) });
-    if (!retry.ok) return [];
+    if (retry.status === 401 || retry.status === 403) throw new FinnhubAuthError(retry.status);
+    if (!retry.ok) throw new FinnhubRequestError(retry.status, path);
     const data = await retry.json();
     return Array.isArray(data) ? data : [];
   }
-  if (!resp.ok) return [];
+
+  // Server errors: throw so caller can count failures
+  if (!resp.ok) {
+    throw new FinnhubRequestError(resp.status, path);
+  }
+
   const data = await resp.json();
   return Array.isArray(data) ? data : [];
 }
@@ -68,12 +88,15 @@ async function main(): Promise<void> {
   const toStr = formatDate(now);
 
   let totalInserted = 0;
+  let requestFailures = 0;
+  let totalRequests = 0;
   const tickerCounts: Record<string, number> = {};
   const errors: string[] = [];
 
   console.log(`[News] Starting: ${fromStr} to ${toStr}`);
 
   // 1. Market-wide news
+  totalRequests++;
   try {
     const marketNews = await finnhubGet('/news', { category: 'general' }, apiKey);
     const valid = marketNews.filter((n) => n.headline?.trim());
@@ -87,6 +110,8 @@ async function main(): Promise<void> {
       else { tickerCounts['_MARKET'] = count ?? rows.length; totalInserted += count ?? rows.length; }
     }
   } catch (err: unknown) {
+    if (err instanceof FinnhubAuthError) { console.error(`[News] ${err.message} — aborting`); process.exit(1); }
+    requestFailures++;
     errors.push(`_MARKET: ${err instanceof Error ? err.message : String(err)}`);
   }
   await sleep(REQUEST_DELAY_MS);
@@ -95,6 +120,7 @@ async function main(): Promise<void> {
   const stocksAndEtfs = [...STOCKS, ...ETFS];
   for (let i = 0; i < stocksAndEtfs.length; i++) {
     const ticker = stocksAndEtfs[i]!;
+    totalRequests++;
     try {
       const news = await finnhubGet('/company-news', { symbol: ticker, from: fromStr, to: toStr }, apiKey);
       const valid = news.filter((n) => n.headline?.trim());
@@ -111,12 +137,15 @@ async function main(): Promise<void> {
         }
       }
     } catch (err: unknown) {
+      if (err instanceof FinnhubAuthError) { console.error(`[News] ${err.message} — aborting`); process.exit(1); }
+      requestFailures++;
       errors.push(`${ticker}: ${err instanceof Error ? err.message : String(err)}`);
     }
     await sleep(REQUEST_DELAY_MS);
   }
 
   // 3. Crypto news via /news?category=crypto
+  totalRequests++;
   try {
     const cryptoNews = await finnhubGet('/news', { category: 'crypto' }, apiKey);
     const valid = cryptoNews.filter((n) => n.headline?.trim());
@@ -144,6 +173,8 @@ async function main(): Promise<void> {
       }
     }
   } catch (err: unknown) {
+    if (err instanceof FinnhubAuthError) { console.error(`[News] ${err.message} — aborting`); process.exit(1); }
+    requestFailures++;
     errors.push(`crypto news: ${err instanceof Error ? err.message : String(err)}`);
   }
   await sleep(REQUEST_DELAY_MS);
@@ -151,6 +182,7 @@ async function main(): Promise<void> {
   // 4. Company news for major crypto
   const majorCrypto = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP'];
   for (const ticker of majorCrypto) {
+    totalRequests++;
     try {
       const news = await finnhubGet('/company-news', { symbol: ticker, from: fromStr, to: toStr }, apiKey);
       const valid = news.filter((n) => n.headline?.trim());
@@ -163,13 +195,32 @@ async function main(): Promise<void> {
         if (error) errors.push(`${ticker} company: ${error.message}`);
         else { tickerCounts[ticker] = (tickerCounts[ticker] ?? 0) + rows.length; totalInserted += rows.length; }
       }
-    } catch { /* silently skip */ }
+    } catch (err: unknown) {
+      if (err instanceof FinnhubAuthError) { console.error(`[News] ${err.message} — aborting`); process.exit(1); }
+      requestFailures++;
+      errors.push(`${ticker} company: ${err instanceof Error ? err.message : String(err)}`);
+    }
     await sleep(REQUEST_DELAY_MS);
   }
 
   const tickersWithNews = Object.keys(tickerCounts).length;
-  console.log(`[News] Done: ${totalInserted} articles for ${tickersWithNews} tickers`);
+  const failureRate = totalRequests > 0 ? requestFailures / totalRequests : 0;
+  console.log(`[News] Done: ${totalInserted} articles for ${tickersWithNews} tickers | ${requestFailures}/${totalRequests} requests failed (${(failureRate * 100).toFixed(0)}%)`);
   if (errors.length > 0) console.log(`[News] Errors (${errors.length}): ${errors.slice(0, 10).join('; ')}`);
+
+  // Fail if >30% of requests failed — indicates Finnhub outage or systemic issue
+  if (failureRate > 0.3) {
+    console.error(`[News] Request failure rate ${(failureRate * 100).toFixed(0)}% exceeds 30% threshold — news data unreliable`);
+    process.exit(1);
+  }
 }
 
-main().catch((err) => { console.error('[News] Fatal:', err); process.exit(1); });
+main().catch((err) => {
+  // FinnhubAuthError may also propagate here if thrown outside a try/catch
+  if (err instanceof FinnhubAuthError) {
+    console.error(`[News] ${err.message}`);
+    process.exit(1);
+  }
+  console.error('[News] Fatal:', err);
+  process.exit(1);
+});

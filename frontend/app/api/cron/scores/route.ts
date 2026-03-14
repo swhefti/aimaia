@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { ASSET_UNIVERSE, ASSET_TYPE_MAP, CRYPTO } from '@shared/lib/constants';
 import { getConfig, getConfigNumber, getConfigBatch, getConfigNumberBatch } from '@/lib/config';
+import { extractJson } from '@/lib/json-parser';
 
 /**
  * GET /api/cron/scores
@@ -188,7 +189,7 @@ async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthr
         messages: [{ role: 'user', content: `Asset: ${ticker}\n\nArticles:\n${articleList}\n\nReturn: {"results": [true/false, ...]}` }],
       });
       const rawText = filterResp.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('');
-      const parsed = JSON.parse(rawText.replace(/```json|```/g, '').trim()) as { results: boolean[] };
+      const parsed = extractJson(rawText) as { results: boolean[] };
       newsItems = newsItems.filter((_, i) => parsed.results[i] === true);
     } catch { /* keep all on failure */ }
   }
@@ -216,7 +217,24 @@ async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthr
   });
 
   const rawText = resp.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('');
-  const parsed = JSON.parse(rawText.replace(/```json|```/g, '').trim()) as { sentiment_score: number; confidence: number; key_themes: string[]; reasoning: string };
+
+  let parsed: { sentiment_score: number; confidence: number; key_themes: string[]; reasoning: string };
+  try {
+    parsed = extractJson(rawText) as typeof parsed;
+    if (typeof parsed.sentiment_score !== 'number') throw new Error('missing sentiment_score');
+  } catch (parseErr) {
+    console.warn(`[Cron/Scores] ${ticker}: sentiment parse failed (${parseErr instanceof Error ? parseErr.message : parseErr}), using fallback`);
+    if (isCrypto) {
+      await upsertScore(supabase, ticker, dateStr, 'sentiment', 0, 0.1, { newsCount: totalFetched, parseFallback: 1 }, 'Sentiment parse failed, neutral fallback', 'stale');
+      return `parse-fallback (crypto neutral)`;
+    }
+    const yesterday = new Date(dateStr);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const { data: prev } = await supabase.from('agent_scores').select('score').eq('ticker', ticker).eq('agent_type', 'sentiment').eq('date', yesterday.toISOString().split('T')[0]!).single();
+    const decayed = prev ? clamp(Number(prev.score) * cfg.sentimentDecayFactor, -1, 1) : 0;
+    await upsertScore(supabase, ticker, dateStr, 'sentiment', decayed, 0.1, { newsCount: totalFetched, decayApplied: prev ? 1 : 0, parseFallback: 1 }, 'Sentiment parse failed, decayed previous', 'stale');
+    return `parse-fallback (decayed=${decayed.toFixed(2)})`;
+  }
 
   const score = clamp(parsed.sentiment_score, -1, 1);
   const todayNews = newsItems.filter((n) => n.published_at.startsWith(dateStr));
@@ -224,7 +242,7 @@ async function runSentiment(supabase: SB, ticker: string, dateStr: string, anthr
   if (newsItems.length >= 5) conf = Math.min(conf + 0.1, 1);
   if (todayNews.length > 0) conf = Math.min(conf + 0.1, 1);
 
-  const explanation = `${parsed.reasoning} Key themes: ${parsed.key_themes.join(', ')}`;
+  const explanation = `${parsed.reasoning} Key themes: ${(parsed.key_themes ?? []).join(', ')}`;
   await upsertScore(supabase, ticker, dateStr, 'sentiment', score, conf, { rawScore: score, newsCount: totalFetched, qualifyingCount: newsItems.length, todayNewsCount: todayNews.length }, explanation, todayNews.length > 0 ? 'current' : 'stale');
   return `ok (score=${score.toFixed(2)})`;
 }
@@ -636,7 +654,7 @@ export async function GET(req: NextRequest) {
         try { results.fundamental = await runFundamental(supabase, ticker, dateStr, cronCfg); } catch (e) { results.fundamental = `error: ${e instanceof Error ? e.message : e}`; }
         scoreResults[ticker] = results;
 
-        const ok = Object.values(results).every((v) => v.startsWith('ok') || v.startsWith('n/a') || v.startsWith('baseline') || v.startsWith('missing') || v.startsWith('decayed'));
+        const ok = Object.values(results).every((v) => v.startsWith('ok') || v.startsWith('n/a') || v.startsWith('baseline') || v.startsWith('missing') || v.startsWith('decayed') || v.startsWith('parse-fallback'));
         if (ok) totalSuccess++; else totalErrors++;
       }),
     );

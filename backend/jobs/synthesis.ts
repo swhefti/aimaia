@@ -8,6 +8,7 @@ loadEnv();
 
 import { getServiceSupabase } from './lib/supabase.js';
 import { getConfig, getConfigNumber } from './lib/config.js';
+import { extractJson } from './lib/json-parser.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import {
@@ -23,23 +24,6 @@ import type { AssetType } from '../../shared/types/assets.js';
 
 type SB = ReturnType<typeof getServiceSupabase>;
 function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }
-
-function extractJson(raw: string): unknown {
-  let text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  try { return JSON.parse(text); } catch { /* continue */ }
-  const start = text.indexOf('{');
-  if (start === -1) throw new Error('No JSON object found in LLM output');
-  text = text.slice(start);
-  for (let end = text.length; end > start; end--) {
-    if (text[end - 1] !== '}') continue;
-    try { return JSON.parse(text.slice(0, end)); } catch { /* continue */ }
-  }
-  const fixed = text.replace(/,\s*$/, '').replace(/"[^"]*$/, '"')
-    + '}'.repeat(Math.max(0, (text.match(/{/g)?.length ?? 0) - (text.match(/}/g)?.length ?? 0)))
-    + ']'.repeat(Math.max(0, (text.match(/\[/g)?.length ?? 0) - (text.match(/]/g)?.length ?? 0)));
-  try { return JSON.parse(fixed); } catch { /* continue */ }
-  throw new Error(`Could not extract valid JSON from LLM output (${text.length} chars)`);
-}
 
 async function findLatestScoreDate(supabase: SB, dateStr: string): Promise<string> {
   const MIN_FULL_RUN = 10;
@@ -503,11 +487,24 @@ async function runSynthesisForPortfolio(supabase: SB, anthropic: Anthropic, port
   const validTickers = new Set((validAssets ?? []).map((a) => a.ticker as string));
   const validRecs = finalOutput.recommendations.filter((rec) => validTickers.has(rec.ticker));
 
+  const itemErrors: string[] = [];
   for (let i = 0; i < validRecs.length; i++) {
     const rec = validRecs[i]!;
     const currentPos = portfolioState.positions.find((p) => p.ticker === rec.ticker);
     const override = overrides.find((o) => o.ticker === rec.ticker);
-    await supabase.from('recommendation_items').insert({ run_id: recRunId, ticker: rec.ticker, action: rec.action, urgency: rec.urgency, current_allocation_pct: currentPos?.allocationPct ?? 0, target_allocation_pct: rec.targetAllocationPct, llm_reasoning: rec.reasoning, confidence: rec.confidence, rules_engine_applied: !!override, rules_engine_note: override ? `${override.rule}: ${override.reason}` : null, priority: i + 1 });
+    const { error: itemError } = await supabase.from('recommendation_items').insert({ run_id: recRunId, ticker: rec.ticker, action: rec.action, urgency: rec.urgency, current_allocation_pct: currentPos?.allocationPct ?? 0, target_allocation_pct: rec.targetAllocationPct, llm_reasoning: rec.reasoning, confidence: rec.confidence, rules_engine_applied: !!override, rules_engine_note: override ? `${override.rule}: ${override.reason}` : null, priority: i + 1 });
+    if (itemError) {
+      console.error(`    Failed to insert recommendation for ${rec.ticker}: ${itemError.message}`);
+      itemErrors.push(`${rec.ticker}: ${itemError.message}`);
+    }
+  }
+
+  if (itemErrors.length > 0) {
+    // Clean up the partially written recommendation_run and its items to prevent corrupt state
+    console.error(`    ${itemErrors.length}/${validRecs.length} recommendation items failed — cleaning up run ${recRunId}`);
+    await supabase.from('recommendation_items').delete().eq('run_id', recRunId);
+    await supabase.from('recommendation_runs').delete().eq('id', recRunId);
+    return `error: recommendation item inserts failed (${itemErrors.join('; ')})`;
   }
 
   const llmNote = llmSucceeded ? 'llm=true' : `llm=false (${llmErrMsg ?? 'fallback'})`;
