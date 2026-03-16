@@ -243,15 +243,18 @@ export async function POST(req: NextRequest) {
     const candidateTickers = pricedScores.map((s) => s.ticker);
     const tickerVols = await loadTickerVolatilities(supabase, candidateTickers);
 
-    // Load calibration data (if available)
+    // Load calibration data (if available, with sample-count safety gate)
+    const MIN_CALIBRATION_SAMPLES = 20;
     const calibration: CalibrationMap = new Map();
     const { data: calData } = await supabase
       .from('score_calibration')
-      .select('score_bucket, calibrated_expected_return')
+      .select('score_bucket, calibrated_expected_return, sample_count')
       .is('asset_type', null)
       .not('calibrated_expected_return', 'is', null);
     for (const row of calData ?? []) {
-      calibration.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+      if (Number(row.sample_count ?? 0) >= MIN_CALIBRATION_SAMPLES) {
+        calibration.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+      }
     }
 
     const result = runOptimizerCore(pricedScores, userParams, [], tickerVols, calibration);

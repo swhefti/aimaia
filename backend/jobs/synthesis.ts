@@ -42,15 +42,22 @@ type SB = ReturnType<typeof getServiceSupabase>;
 // Calibration loader
 // ---------------------------------------------------------------------------
 
+// Minimum samples required per score bucket before calibrated values are trusted.
+// Below this threshold, the optimizer falls back to heuristic expected returns.
+const MIN_CALIBRATION_SAMPLES = 20;
+
 async function loadCalibration(supabase: SB): Promise<CalibrationMap> {
   const cal = new Map<string, number>();
   const { data } = await supabase
     .from('score_calibration')
-    .select('score_bucket, calibrated_expected_return')
-    .is('asset_type', null) // use the global (non-asset-type-specific) calibration
+    .select('score_bucket, calibrated_expected_return, sample_count')
+    .is('asset_type', null)
     .not('calibrated_expected_return', 'is', null);
   for (const row of data ?? []) {
-    cal.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+    // Safety gate: only trust calibration with enough samples
+    if (Number(row.sample_count ?? 0) >= MIN_CALIBRATION_SAMPLES) {
+      cal.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+    }
   }
   return cal;
 }
