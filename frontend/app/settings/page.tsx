@@ -46,7 +46,7 @@ export default function SettingsPage() {
     if (isGuest) {
       const stored = sessionStorage.getItem('guest_profile');
       if (stored) setProfile(JSON.parse(stored) as UserProfile);
-      setPortfolio({ id: 'guest-portfolio', userId: 'guest-local', name: 'Guest Portfolio', createdAt: '', status: 'active' });
+      setPortfolio({ id: 'guest-portfolio', userId: 'guest-local', name: 'Guest Portfolio', createdAt: '', status: 'active', strategyMode: 'pro', strategyVersion: '1.0' });
       setLoading(false);
       return;
     }

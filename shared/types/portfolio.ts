@@ -22,12 +22,16 @@ export interface UserProfile {
   onboardingCompletedAt: string | null;
 }
 
+export type StrategyMode = 'pro';
+
 export interface Portfolio {
   id: string;
   userId: string;
   name: string;
   createdAt: string; // ISO 8601 datetime string
   status: 'active' | 'archived';
+  strategyMode: StrategyMode;
+  strategyVersion: string;
 }
 
 export interface PortfolioPosition {

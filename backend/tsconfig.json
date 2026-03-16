@@ -20,7 +20,8 @@
   "include": [
     "../shared/**/*",
     "pipeline/**/*",
-    "jobs/**/*"
+    "jobs/**/*",
+    "optimizer/**/*"
   ],
   "exclude": ["node_modules", "dist"]
 }

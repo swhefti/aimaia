@@ -1,3 +1,14 @@
+/**
+ * Synthesis Agent — now operates in explanation-only mode.
+ *
+ * Architecture (post-optimizer refactor):
+ * - The optimizer (backend/optimizer/) determines target weights and actions
+ * - The synthesis agent explains those actions using LLM
+ * - The rules engine is retained as a final safety net
+ *
+ * For daily production runs, use: npx tsx backend/jobs/synthesis.ts
+ * This module provides the library interface for the agents/ pipeline.
+ */
 import type { SynthesisOutput } from '../../shared/types/synthesis.js';
 import type { AgentScore } from '../../shared/types/scores.js';
 import { createSupabaseClient } from '../../shared/lib/supabase.js';
@@ -8,6 +19,11 @@ import { applyRulesEngine, generateFallbackRecommendations } from './rules-engin
 import type { PortfolioState, RulesOverride } from './rules-engine.js';
 import { formatNarrative } from './narrative-formatter.js';
 
+/**
+ * Run synthesis for a portfolio. This is the agents/ library version.
+ * The production job (backend/jobs/synthesis.ts) uses an optimizer-first flow.
+ * This function retains the original LLM-based flow as a fallback/reference.
+ */
 export async function runSynthesisForPortfolio(
   portfolioId: string,
   userId: string,
@@ -19,17 +35,11 @@ export async function runSynthesisForPortfolio(
   console.log(`[Synthesis] Starting for portfolio ${portfolioId}, user ${userId}`);
 
   try {
-    // 1. Build context package
     const context = await buildContextPackage(userId, portfolioId, date);
-
-    // 2. Build prompts
     const systemPrompt = buildSystemPrompt();
     const userPrompt = buildUserPrompt(context);
-
-    // 3. Call LLM
     const llmResult = await callSynthesisLLM(systemPrompt, userPrompt, userId, portfolioId, date);
 
-    // 4. Load user profile for rules engine
     const { data: profileData } = await supabase
       .from('user_profiles')
       .select('*')
@@ -54,7 +64,6 @@ export async function runSynthesisForPortfolio(
       onboardingCompletedAt: (profileData.onboarding_completed_at as string) ?? null,
     };
 
-    // Build portfolio state for rules engine
     const portfolioState: PortfolioState = {
       positions: context.portfolioState.positions.map((p) => ({
         ticker: p.ticker,
@@ -70,26 +79,19 @@ export async function runSynthesisForPortfolio(
     let runId: string;
 
     if (llmResult) {
-      // 5a. Apply rules engine to LLM output
       const rulesResult = await applyRulesEngine(llmResult.output, userProfile, portfolioState);
       finalOutput = rulesResult.validated;
       overrides = rulesResult.overrides;
       runId = llmResult.runId;
     } else {
-      // 5b. Fallback: generate recommendations from math scores
       console.warn(`[Synthesis] LLM call failed for portfolio ${portfolioId}. Using fallback.`);
-
       const { data: agentScoresData } = await supabase
-        .from('agent_scores')
-        .select('*')
-        .eq('date', dateStr);
+        .from('agent_scores').select('*').eq('date', dateStr);
 
       const agentScores: AgentScore[] = (agentScoresData ?? []).map((s) => ({
-        ticker: s.ticker as string,
-        date: s.date as string,
+        ticker: s.ticker as string, date: s.date as string,
         agentType: s.agent_type as AgentScore['agentType'],
-        score: Number(s.score),
-        confidence: Number(s.confidence),
+        score: Number(s.score), confidence: Number(s.confidence),
         componentScores: (s.component_scores as Record<string, number>) ?? {},
         explanation: (s.explanation as string) ?? '',
         dataFreshness: (s.data_freshness as AgentScore['dataFreshness']) ?? 'missing',
@@ -98,55 +100,32 @@ export async function runSynthesisForPortfolio(
 
       finalOutput = generateFallbackRecommendations(agentScores, userProfile, portfolioState);
 
-      // Create a synthesis_runs record for the fallback
-      const { data: fallbackRun } = await supabase
-        .from('synthesis_runs')
-        .insert({
-          user_id: userId,
-          portfolio_id: portfolioId,
-          run_date: dateStr,
-          model_used: 'fallback',
-          input_tokens: 0,
-          output_tokens: 0,
-          latency_ms: 0,
-          llm_call_succeeded: false,
-          fallback_used: true,
-        })
-        .select('id')
-        .single();
+      const { data: fallbackRun } = await supabase.from('synthesis_runs').insert({
+        user_id: userId, portfolio_id: portfolioId, run_date: dateStr,
+        model_used: 'fallback', input_tokens: 0, output_tokens: 0,
+        latency_ms: 0, llm_call_succeeded: false, fallback_used: true,
+      }).select('id').single();
 
       runId = (fallbackRun?.id as string) ?? 'unknown';
     }
 
-    // 6. Format narrative
     finalOutput.portfolioNarrative = formatNarrative(finalOutput);
 
-    // 7. Update synthesis_raw_outputs with post-rules output
     if (llmResult) {
-      await supabase
-        .from('synthesis_raw_outputs')
-        .update({
-          post_rules_output: finalOutput,
-          overrides_applied: overrides,
-        })
+      await supabase.from('synthesis_raw_outputs')
+        .update({ post_rules_output: finalOutput, overrides_applied: overrides })
         .eq('synthesis_run_id', runId);
     }
 
-    // 8. Write recommendation_runs
     const { data: recRun, error: recRunError } = await supabase
-      .from('recommendation_runs')
-      .insert({
-        portfolio_id: portfolioId,
-        run_date: dateStr,
-        synthesis_run_id: runId,
+      .from('recommendation_runs').insert({
+        portfolio_id: portfolioId, run_date: dateStr, synthesis_run_id: runId,
         overall_confidence: finalOutput.overallConfidence,
         goal_status: finalOutput.portfolioAssessment.goalStatus,
         portfolio_narrative: finalOutput.portfolioNarrative,
         weight_rationale: finalOutput.weightRationale,
         fallback_used: !llmResult,
-      })
-      .select('id')
-      .single();
+      }).select('id').single();
 
     if (recRunError || !recRun) {
       console.error('[Synthesis] Failed to write recommendation_runs:', recRunError?.message);
@@ -154,49 +133,28 @@ export async function runSynthesisForPortfolio(
     }
 
     const recRunId = recRun.id as string;
-
-    // 9. Validate tickers exist in assets table before inserting
-    const { data: validAssets } = await supabase
-      .from('assets')
-      .select('ticker');
+    const { data: validAssets } = await supabase.from('assets').select('ticker');
     const validTickers = new Set((validAssets ?? []).map((a) => a.ticker as string));
 
-    const validRecs = finalOutput.recommendations.filter((rec) => {
-      if (!validTickers.has(rec.ticker)) {
-        console.warn(`[Synthesis] Skipping recommendation for unknown ticker: ${rec.ticker}`);
-        return false;
-      }
-      return true;
-    });
+    const validRecs = finalOutput.recommendations.filter((rec) => validTickers.has(rec.ticker));
 
-    // Write recommendation_items
     for (let i = 0; i < validRecs.length; i++) {
       const rec = validRecs[i]!;
       const currentPos = portfolioState.positions.find((p) => p.ticker === rec.ticker);
       const override = overrides.find((o) => o.ticker === rec.ticker);
 
-      const { error: itemError } = await supabase.from('recommendation_items').insert({
-        run_id: recRunId,
-        ticker: rec.ticker,
-        action: rec.action,
-        urgency: rec.urgency,
+      await supabase.from('recommendation_items').insert({
+        run_id: recRunId, ticker: rec.ticker, action: rec.action, urgency: rec.urgency,
         current_allocation_pct: currentPos?.allocationPct ?? 0,
         target_allocation_pct: rec.targetAllocationPct,
-        llm_reasoning: rec.reasoning,
-        confidence: rec.confidence,
+        llm_reasoning: rec.reasoning, confidence: rec.confidence,
         rules_engine_applied: !!override,
         rules_engine_note: override ? `${override.rule}: ${override.reason}` : null,
         priority: i + 1,
       });
-
-      if (itemError) {
-        console.error(`[Synthesis] Failed to insert recommendation for ${rec.ticker}:`, itemError.message);
-      }
     }
 
-    console.log(
-      `[Synthesis] Complete for portfolio ${portfolioId}. ${finalOutput.recommendations.length} recommendations, ${overrides.length} overrides.`
-    );
+    console.log(`[Synthesis] Complete for portfolio ${portfolioId}. ${validRecs.length} recommendations, ${overrides.length} overrides.`);
   } catch (err) {
     console.error(`[Synthesis] Error for portfolio ${portfolioId}:`, err);
   }

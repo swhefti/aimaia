@@ -84,6 +84,8 @@ export async function getPortfolio(supabase: SupabaseClient, userId: string): Pr
     name: data.name,
     createdAt: data.created_at,
     status: data.status,
+    strategyMode: data.strategy_mode ?? 'pro',
+    strategyVersion: data.strategy_version ?? '1.0',
   };
 }
 
@@ -105,7 +107,7 @@ export async function createPortfolio(
 
   const { data, error } = await supabase
     .from('portfolios')
-    .insert({ user_id: userId, name, status: 'active' })
+    .insert({ user_id: userId, name, status: 'active', strategy_mode: 'pro', strategy_version: '1.0' })
     .select('id')
     .single();
 
