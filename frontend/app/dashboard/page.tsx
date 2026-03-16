@@ -1057,7 +1057,7 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <Logo size="sm" variant="dark" />
-            <span className="text-xs text-gray-500">(Version 0.6)</span>
+            <span className="text-xs text-gray-500">(Version 0.61)</span>
             {firstName && !isGuest && (
               <span className="text-sm text-gray-300">{firstName}</span>
             )}

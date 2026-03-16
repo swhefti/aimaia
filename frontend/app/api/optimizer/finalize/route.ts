@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { computeGoalProbabilityHeuristic } from '@shared/lib/optimizer-core';
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -36,12 +37,19 @@ export async function POST(req: NextRequest) {
       capital,
       positions,
       cashWeightPct,
+      riskSummary,
       profile,
     } = body as {
       userId: string;
       capital: number;
       positions: { ticker: string; weightPct: number; price: number }[];
       cashWeightPct: number;
+      riskSummary?: {
+        expectedReturn: number;
+        portfolioVolatility: number;
+        concentrationRisk: number;
+        diversificationScore: number;
+      };
       profile: {
         investmentCapital: number;
         timeHorizonMonths: number;
@@ -165,7 +173,18 @@ export async function POST(req: NextRequest) {
       .eq('id', portfolioId);
     if (cashError) console.error('Cash balance error:', cashError);
 
-    // 5. Insert initial valuation
+    // 5. Compute initial goal probability (v1 heuristic, not the full AI model)
+    const goalProbPct = computeGoalProbabilityHeuristic({
+      expectedReturn: riskSummary?.expectedReturn ?? 0,
+      goalReturnPct: profile.goalReturnPct,
+      timeHorizonMonths: profile.timeHorizonMonths,
+      positionCount: positionRows.length,
+      maxPositions: profile.maxPositions,
+      portfolioVolatility: riskSummary?.portfolioVolatility ?? 0.25,
+      concentrationRisk: riskSummary?.concentrationRisk ?? 0.5,
+    });
+
+    // 6. Insert initial valuation
     const date = new Date().toISOString().split('T')[0]!;
     await supabase.from('portfolio_valuations').upsert(
       {
@@ -175,12 +194,11 @@ export async function POST(req: NextRequest) {
         cash_value: cashValue,
         daily_pnl: 0,
         cumulative_return_pct: 0,
-        goal_probability_pct: 50, // initial default
+        goal_probability_pct: goalProbPct,
       },
       { onConflict: 'portfolio_id,date' },
     ).then(({ error }) => {
       if (error) {
-        // upsert with composite key might not work if no unique constraint, try insert
         supabase.from('portfolio_valuations').insert({
           portfolio_id: portfolioId,
           date,
@@ -188,14 +206,14 @@ export async function POST(req: NextRequest) {
           cash_value: cashValue,
           daily_pnl: 0,
           cumulative_return_pct: 0,
-          goal_probability_pct: 50,
+          goal_probability_pct: goalProbPct,
         }).then(({ error: insertErr }) => {
           if (insertErr) console.error('Valuation insert error:', insertErr);
         });
       }
     });
 
-    // 6. Mark onboarding complete
+    // 7. Mark onboarding complete
     await supabase.from('user_profiles')
       .update({ onboarding_completed_at: new Date().toISOString() })
       .eq('user_id', userId);

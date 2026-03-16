@@ -323,6 +323,7 @@ export default function OnboardingPage() {
             price: tw.price,
           })),
           cashWeightPct: draft.cashWeightPct,
+          riskSummary: draft.riskSummary,
           profile: {
             investmentCapital: capital,
             timeHorizonMonths: horizonMonths,

@@ -74,6 +74,14 @@ async function finnhubGet(path: string, params: Record<string, string>, apiKey: 
   }
 
   const data = await resp.json();
+  // Finnhub may return {"error": "..."} with HTTP 200 for invalid tokens
+  if (data && typeof data === 'object' && !Array.isArray(data) && 'error' in data) {
+    const msg = String((data as Record<string, unknown>).error);
+    if (msg.toLowerCase().includes('invalid api key') || msg.toLowerCase().includes('authentication')) {
+      throw new FinnhubAuthError(200);
+    }
+    throw new FinnhubRequestError(200, `${path}: ${msg}`);
+  }
   return Array.isArray(data) ? data : [];
 }
 

@@ -112,7 +112,7 @@ function LoginPageInner() {
         <div className="text-center mb-8">
           <Logo size="lg" variant="light" showSubtitle />
           <p className="text-slate-500 text-sm mt-3">Sign in to your account</p>
-          <span className="text-xs text-slate-400 mt-1 inline-block">Version 0.6</span>
+          <span className="text-xs text-slate-400 mt-1 inline-block">Version 0.61</span>
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
