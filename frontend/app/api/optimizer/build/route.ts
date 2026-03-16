@@ -5,6 +5,7 @@ import {
   runOptimizerCore,
   type OptimizerTickerScore,
   type OptimizerUserParams,
+  type CalibrationMap,
 } from '@shared/lib/optimizer-core';
 import type { AssetType } from '@shared/types/assets';
 import type { RiskProfile, VolatilityTolerance } from '@shared/types/portfolio';
@@ -242,7 +243,18 @@ export async function POST(req: NextRequest) {
     const candidateTickers = pricedScores.map((s) => s.ticker);
     const tickerVols = await loadTickerVolatilities(supabase, candidateTickers);
 
-    const result = runOptimizerCore(pricedScores, userParams, [], tickerVols);
+    // Load calibration data (if available)
+    const calibration: CalibrationMap = new Map();
+    const { data: calData } = await supabase
+      .from('score_calibration')
+      .select('score_bucket, calibrated_expected_return')
+      .is('asset_type', null)
+      .not('calibrated_expected_return', 'is', null);
+    for (const row of calData ?? []) {
+      calibration.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+    }
+
+    const result = runOptimizerCore(pricedScores, userParams, [], tickerVols, calibration);
 
     // 5. Fetch asset names to enrich response
     const { data: assetData } = await supabase.from('assets').select('ticker, name');

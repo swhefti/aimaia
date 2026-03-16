@@ -181,6 +181,7 @@ export default function OnboardingPage() {
   const [draft, setDraft] = useState<OptimizerBuildResult | null>(null);
   const [showDraft, setShowDraft] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [excludedTickers, setExcludedTickers] = useState<string[]>([]);
 
   const riskProfile = deriveRiskProfile(returnGoalPct, maxReturnPct);
 
@@ -241,9 +242,12 @@ export default function OnboardingPage() {
     setBuilding(true);
     setBuildError(null);
 
+    // Accumulate exclusions across repeated rebuilds
+    const newExcluded = [...excludedTickers, tickerToRemove];
+    setExcludedTickers(newExcluded);
+
     try {
       const allowedTickers = getAllowedTickers();
-      const excludeTickers = [tickerToRemove];
 
       const res = await fetch('/api/optimizer/build', {
         method: 'POST',
@@ -259,7 +263,7 @@ export default function OnboardingPage() {
           assetTypes,
           maxPositions,
           allowedTickers: allowedTickers.length > 0 ? allowedTickers : undefined,
-          excludeTickers,
+          excludeTickers: newExcluded,
         }),
       });
 
@@ -797,7 +801,7 @@ export default function OnboardingPage() {
             <div className="flex gap-3">
               <Button
                 variant="ghost"
-                onClick={() => { setShowDraft(false); setDraft(null); }}
+                onClick={() => { setShowDraft(false); setDraft(null); setExcludedTickers([]); }}
                 className="flex-1"
               >
                 Back to Settings

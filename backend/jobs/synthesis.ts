@@ -22,7 +22,7 @@ import { extractJson } from './lib/json-parser.js';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   ASSET_TYPE_MAP, SYNTHESIS_MODEL,
-  MAX_DAILY_CHANGES, DEFAULT_AGENT_WEIGHTS, getWeightsForTicker,
+  DEFAULT_AGENT_WEIGHTS, getWeightsForTicker,
 } from '../../shared/lib/constants.js';
 import {
   runOptimizerCore,
@@ -32,10 +32,28 @@ import {
   type OptimizerUserParams,
   type OptimizerPortfolioAction,
   type OptimizerOutput,
+  type CalibrationMap,
 } from '../../shared/lib/optimizer-core.js';
 import type { AssetType } from '../../shared/types/assets.js';
 
 type SB = ReturnType<typeof getServiceSupabase>;
+
+// ---------------------------------------------------------------------------
+// Calibration loader
+// ---------------------------------------------------------------------------
+
+async function loadCalibration(supabase: SB): Promise<CalibrationMap> {
+  const cal = new Map<string, number>();
+  const { data } = await supabase
+    .from('score_calibration')
+    .select('score_bucket, calibrated_expected_return')
+    .is('asset_type', null) // use the global (non-asset-type-specific) calibration
+    .not('calibrated_expected_return', 'is', null);
+  for (const row of data ?? []) {
+    cal.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+  }
+  return cal;
+}
 
 // ---------------------------------------------------------------------------
 // Score loading
@@ -216,7 +234,7 @@ async function generateExplanation(
 
 async function runForPortfolio(
   supabase: SB, anthropic: Anthropic, portfolioId: string, userId: string, dateStr: string,
-  allScores: OptimizerTickerScore[],
+  allScores: OptimizerTickerScore[], calibration: CalibrationMap,
 ): Promise<string> {
   console.log(`  [Synthesis] Portfolio ${portfolioId} (user ${userId})`);
 
@@ -288,7 +306,7 @@ async function runForPortfolio(
     maxDrawdownLimitPct: maxDrawdownPct,
   };
 
-  const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, tickerVols);
+  const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, tickerVols, calibration);
 
   // Persist portfolio_risk_metrics
   await supabase.from('portfolio_risk_metrics').upsert({
@@ -425,7 +443,8 @@ async function main(): Promise<void> {
   console.log(`[Synthesis] Starting optimizer-first synthesis for ${dateStr}`);
 
   const allScores = await loadScores(supabase, dateStr);
-  console.log(`[Synthesis] Loaded ${allScores.length} ticker scores`);
+  const calibration = await loadCalibration(supabase);
+  console.log(`[Synthesis] Loaded ${allScores.length} ticker scores, ${calibration.size} calibration entries`);
 
   const { data: portfolios, error } = await supabase.from('portfolios').select('id, user_id').eq('status', 'active');
   if (error) { console.error('Failed to load portfolios:', error.message); process.exit(1); }
@@ -436,7 +455,7 @@ async function main(): Promise<void> {
   let success = 0, errors = 0;
   for (const portfolio of portfolios) {
     try {
-      const result = await runForPortfolio(supabase, anthropic, portfolio.id as string, portfolio.user_id as string, dateStr, allScores);
+      const result = await runForPortfolio(supabase, anthropic, portfolio.id as string, portfolio.user_id as string, dateStr, allScores, calibration);
       if (result.startsWith('ok')) success++; else errors++;
     } catch (err) {
       console.error(`  Error for ${portfolio.id}:`, err instanceof Error ? err.message : err);

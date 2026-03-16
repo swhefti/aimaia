@@ -91,10 +91,33 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Calibration (optional data-backed expected return override)
+// ---------------------------------------------------------------------------
+
+/**
+ * Calibration map: score_bucket → calibrated annualized expected return.
+ * If provided, the optimizer blends calibrated values with the heuristic.
+ * Loaded from `score_calibration` table by callers that have DB access.
+ */
+export type CalibrationMap = Map<string, number>;
+
+function scoreBucketForValue(score: number): string {
+  if (score >= 0.60) return 'strong_buy';
+  if (score >= 0.20) return 'buy';
+  if (score >= -0.19) return 'hold';
+  if (score >= -0.59) return 'sell';
+  return 'strong_sell';
+}
+
+// ---------------------------------------------------------------------------
 // Expected Returns
 // ---------------------------------------------------------------------------
 
-function computeExpectedReturn(s: OptimizerTickerScore): number {
+function computeExpectedReturn(
+  s: OptimizerTickerScore,
+  calibration?: CalibrationMap,
+): number {
+  // Heuristic expected return
   let mu = s.compositeScore * BASE_RETURN_SCALE;
   const confMult = s.confidence < LOW_CONFIDENCE_THRESHOLD
     ? s.confidence / LOW_CONFIDENCE_THRESHOLD * 0.5
@@ -102,6 +125,21 @@ function computeExpectedReturn(s: OptimizerTickerScore): number {
   mu *= confMult;
   if (s.dataFreshness === 'stale') mu *= 0.7;
   if (s.dataFreshness === 'missing') mu *= 0.3;
+
+  // Blend with calibrated value if available
+  if (calibration && calibration.size > 0) {
+    const bucket = scoreBucketForValue(s.compositeScore);
+    const calibratedMu = calibration.get(bucket);
+    if (calibratedMu !== undefined) {
+      // Apply confidence/freshness damping to calibrated value too
+      let calAdj = calibratedMu * confMult;
+      if (s.dataFreshness === 'stale') calAdj *= 0.7;
+      if (s.dataFreshness === 'missing') calAdj *= 0.3;
+      // Blend: 60% calibrated + 40% heuristic (calibrated takes priority)
+      mu = calAdj * 0.6 + mu * 0.4;
+    }
+  }
+
   return mu;
 }
 
@@ -133,6 +171,8 @@ export function runOptimizerCore(
   currentHoldings: OptimizerCurrentHolding[],
   /** Annualized volatility per ticker (from historical returns). Empty map = no vol data. */
   tickerVolatilities: Map<string, number>,
+  /** Optional calibration from score_calibration table. If empty/undefined, uses heuristic only. */
+  calibration?: CalibrationMap,
 ): OptimizerOutput {
   const config = deriveConfig(userParams);
   const currentTickers = new Set(currentHoldings.map((h) => h.ticker));
@@ -158,7 +198,7 @@ export function runOptimizerCore(
   // 3. Compute expected returns and rank
   const withReturns = allCandidates.map((s) => ({
     ...s,
-    expectedReturn: computeExpectedReturn(s),
+    expectedReturn: computeExpectedReturn(s, calibration),
   }));
   withReturns.sort((a, b) => b.expectedReturn - a.expectedReturn);
 
@@ -310,15 +350,12 @@ function generateActions(
   const order: Record<OptimizerActionType, number> = { SELL: 0, BUY: 1, REDUCE: 2, ADD: 3, HOLD: 4 };
   actions.sort((a, b) => order[a.action] - order[b.action] || Math.abs(b.deltaWeightPct) - Math.abs(a.deltaWeightPct));
 
-  // Enforce MAX_DAILY_CHANGES
+  // Enforce MAX_DAILY_CHANGES — remove suppressed actions entirely rather than
+  // mutating them to HOLD with contradictory target/delta values.
   const nonHold = actions.filter((a) => a.action !== 'HOLD');
   if (nonHold.length > MAX_DAILY_CHANGES) {
     const kept = new Set(nonHold.slice(0, MAX_DAILY_CHANGES).map((a) => a.ticker));
-    for (const a of actions) {
-      if (a.action !== 'HOLD' && !kept.has(a.ticker)) {
-        a.action = 'HOLD';
-      }
-    }
+    return actions.filter((a) => a.action === 'HOLD' || kept.has(a.ticker));
   }
 
   return actions;

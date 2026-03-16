@@ -13,21 +13,8 @@ function getServiceSupabase() {
  * POST /api/optimizer/finalize
  * Creates the real portfolio after user approves the optimizer draft.
  *
- * Body: {
- *   userId: string,
- *   capital: number,
- *   positions: { ticker: string; weightPct: number; price: number }[],
- *   cashWeightPct: number,
- *   profile: { ... user profile fields ... },
- * }
- *
- * This endpoint:
- * 1. Upserts user profile
- * 2. Creates portfolio (or reuses existing active one)
- * 3. Inserts positions
- * 4. Sets cash balance
- * 5. Inserts initial valuation
- * 6. Marks onboarding complete
+ * Safety: old positions are NOT deleted until new positions are fully persisted.
+ * If any write fails, existing portfolio state is preserved intact.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -93,8 +80,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to save profile' }, { status: 500 });
     }
 
-    // 2. Create portfolio (or reuse existing)
+    // 2. Resolve or create portfolio
     let portfolioId: string;
+    let hasExistingPositions = false;
+
     const { data: existing } = await supabase
       .from('portfolios')
       .select('id')
@@ -106,8 +95,7 @@ export async function POST(req: NextRequest) {
 
     if (existing) {
       portfolioId = existing.id as string;
-      // Clear any existing positions (fresh start from optimizer)
-      await supabase.from('portfolio_positions').delete().eq('portfolio_id', portfolioId);
+      hasExistingPositions = true;
     } else {
       const { data: newPortfolio, error: createError } = await supabase
         .from('portfolios')
@@ -122,7 +110,6 @@ export async function POST(req: NextRequest) {
         .single();
 
       if (createError?.code === '23505') {
-        // Unique constraint — race condition, fetch existing
         const { data: fallback } = await supabase
           .from('portfolios')
           .select('id')
@@ -132,7 +119,7 @@ export async function POST(req: NextRequest) {
           .single();
         if (!fallback) return NextResponse.json({ error: 'Failed to create portfolio' }, { status: 500 });
         portfolioId = fallback.id as string;
-        await supabase.from('portfolio_positions').delete().eq('portfolio_id', portfolioId);
+        hasExistingPositions = true;
       } else if (createError || !newPortfolio) {
         console.error('Portfolio create error:', createError);
         return NextResponse.json({ error: 'Failed to create portfolio' }, { status: 500 });
@@ -141,7 +128,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3. Insert positions
+    // 3. Build new position rows (DO NOT delete old positions yet)
     let investedValue = 0;
     const positionRows = positions
       .filter((p) => p.weightPct > 0.5 && p.price > 0)
@@ -157,15 +144,50 @@ export async function POST(req: NextRequest) {
         };
       });
 
+    // 4. Insert new positions FIRST (old positions still exist — safe)
     if (positionRows.length > 0) {
       const { error: posError } = await supabase.from('portfolio_positions').insert(positionRows);
       if (posError) {
+        // Insert failed — old positions are untouched, portfolio is safe
         console.error('Position insert error:', posError);
         return NextResponse.json({ error: 'Failed to insert positions' }, { status: 500 });
       }
     }
 
-    // 4. Set cash balance
+    // 5. Now that new positions are persisted, safely delete old ones
+    if (hasExistingPositions) {
+      // Get IDs of newly inserted positions so we can exclude them from deletion
+      const { data: allPositions } = await supabase
+        .from('portfolio_positions')
+        .select('id, ticker, opened_at')
+        .eq('portfolio_id', portfolioId)
+        .order('opened_at', { ascending: false });
+
+      if (allPositions && allPositions.length > positionRows.length) {
+        // Keep the newest N positions (just inserted), delete the rest
+        const newTickers = new Set(positionRows.map((p) => p.ticker));
+        // The newly inserted rows are the most recent; identify old rows to delete
+        const seen = new Map<string, number>(); // ticker -> count of new rows seen
+        const idsToDelete: string[] = [];
+        for (const pos of allPositions) {
+          const t = pos.ticker as string;
+          const seenCount = seen.get(t) ?? 0;
+          const expectedNew = positionRows.filter((p) => p.ticker === t).length;
+          if (newTickers.has(t) && seenCount < expectedNew) {
+            // This is one of the new rows — keep it
+            seen.set(t, seenCount + 1);
+          } else {
+            // Old row — mark for deletion
+            idsToDelete.push(pos.id as string);
+          }
+        }
+        if (idsToDelete.length > 0) {
+          await supabase.from('portfolio_positions').delete().in('id', idsToDelete);
+        }
+      }
+    }
+
+    // 6. Set cash balance
     const cashValue = Math.max(0, capital - investedValue);
     const { error: cashError } = await supabase
       .from('portfolios')
@@ -173,7 +195,7 @@ export async function POST(req: NextRequest) {
       .eq('id', portfolioId);
     if (cashError) console.error('Cash balance error:', cashError);
 
-    // 5. Compute initial goal probability (v1 heuristic, not the full AI model)
+    // 7. Compute initial goal probability (v1 heuristic)
     const goalProbPct = computeGoalProbabilityHeuristic({
       expectedReturn: riskSummary?.expectedReturn ?? 0,
       goalReturnPct: profile.goalReturnPct,
@@ -184,7 +206,7 @@ export async function POST(req: NextRequest) {
       concentrationRisk: riskSummary?.concentrationRisk ?? 0.5,
     });
 
-    // 6. Insert initial valuation
+    // 8. Insert initial valuation
     const date = new Date().toISOString().split('T')[0]!;
     await supabase.from('portfolio_valuations').upsert(
       {
@@ -213,7 +235,7 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    // 7. Mark onboarding complete
+    // 9. Mark onboarding complete
     await supabase.from('user_profiles')
       .update({ onboarding_completed_at: new Date().toISOString() })
       .eq('user_id', userId);
