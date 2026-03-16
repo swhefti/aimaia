@@ -135,6 +135,78 @@ async function loadScoresForDate(supabase: SB, dateStr: string): Promise<Optimiz
 }
 
 // ---------------------------------------------------------------------------
+// Composite score for a single ticker (same logic as live optimizer)
+// ---------------------------------------------------------------------------
+
+async function computeCompositeForTicker(
+  supabase: SB,
+  ticker: string,
+  dateStr: string,
+): Promise<{ compositeScore: number; confidence: number; dataFreshness: 'current' | 'stale' | 'missing' } | null> {
+  const { data: agentRows } = await supabase
+    .from('agent_scores')
+    .select('agent_type, score, confidence, data_freshness')
+    .eq('ticker', ticker)
+    .eq('date', dateStr);
+
+  if (!agentRows || agentRows.length === 0) return null;
+
+  const isCrypto = ASSET_TYPE_MAP[ticker] === 'crypto';
+
+  // Load regime score
+  const regimeTicker = isCrypto ? 'MARKET_CRYPTO' : 'MARKET';
+  const { data: regimeRow } = await supabase
+    .from('agent_scores')
+    .select('score, confidence')
+    .eq('ticker', regimeTicker)
+    .eq('agent_type', 'market_regime')
+    .eq('date', dateStr)
+    .limit(1)
+    .single();
+
+  // Fallback: stock regime for crypto if crypto regime missing
+  let regimeScore = regimeRow ? Number(regimeRow.score) : 0;
+  if (!regimeRow && isCrypto) {
+    const { data: fallback } = await supabase
+      .from('agent_scores')
+      .select('score')
+      .eq('ticker', 'MARKET')
+      .eq('agent_type', 'market_regime')
+      .eq('date', dateStr)
+      .limit(1)
+      .single();
+    if (fallback) regimeScore = Number(fallback.score);
+  }
+
+  let technical = 0, sentiment = 0, fundamental = 0;
+  let maxConfidence = 0;
+  let freshness: 'current' | 'stale' | 'missing' = 'current';
+  let sentimentMissing = false;
+
+  for (const row of agentRows) {
+    const agentType = row.agent_type as string;
+    const score = Number(row.score);
+    const conf = Number(row.confidence);
+    const fresh = row.data_freshness as 'current' | 'stale' | 'missing';
+
+    if (agentType === 'technical') { technical = score; maxConfidence = Math.max(maxConfidence, conf); }
+    else if (agentType === 'sentiment') {
+      sentiment = score;
+      if (isCrypto && (fresh === 'missing' || conf === 0)) sentimentMissing = true;
+    }
+    else if (agentType === 'fundamental') { fundamental = score; }
+
+    if (fresh === 'missing' || (fresh === 'stale' && freshness !== 'missing')) freshness = fresh;
+  }
+
+  const w = getWeightsForTicker(ticker, sentimentMissing);
+  const compositeScore = technical * w.technical + sentiment * w.sentiment
+    + fundamental * w.fundamental + regimeScore * w.regime;
+
+  return { compositeScore, confidence: maxConfidence, dataFreshness: freshness };
+}
+
+// ---------------------------------------------------------------------------
 // Mode 1: Score recent recommendations against realized returns
 // ---------------------------------------------------------------------------
 
@@ -207,21 +279,26 @@ async function evaluateOutcomes(supabase: SB): Promise<void> {
     const benchReturn7d = spy7d && spyAtDecision ? (spy7d - spyAtDecision) / spyAtDecision : null;
     const benchReturn30d = spy30d && spyAtDecision ? (spy30d - spyAtDecision) / spyAtDecision : null;
 
-    // Get composite score for this ticker on this date
-    const { data: scoreData } = await supabase
-      .from('agent_scores')
-      .select('score, confidence, data_freshness')
-      .eq('ticker', ticker)
-      .eq('date', runDate)
-      .eq('agent_type', 'technical')
-      .limit(1)
-      .single();
+    // Compute true composite score using the same logic as the live optimizer.
+    // Load all agent scores for this ticker on this date and blend them.
+    const scoreEntry = await computeCompositeForTicker(supabase, ticker, runDate);
 
-    const compositeScore = scoreData ? Number(scoreData.score) : null;
+    const compositeScore = scoreEntry?.compositeScore ?? null;
     const confidence = Number(item.confidence ?? 0);
-    const freshness = (scoreData?.data_freshness as string) ?? 'missing';
+    const freshness = scoreEntry?.dataFreshness ?? 'missing';
 
     const assetType = ASSET_TYPE_MAP[ticker] ?? 'stock';
+
+    // Benchmark success is action-direction-aware:
+    //   BUY/ADD succeed when asset outperforms benchmark
+    //   SELL/REDUCE succeed when asset underperforms benchmark
+    const isBullishAction = action === 'BUY' || action === 'ADD';
+    const beatBench7d = return7d !== null && benchReturn7d !== null
+      ? (isBullishAction ? return7d > benchReturn7d : return7d < benchReturn7d)
+      : null;
+    const beatBench30d = return30d !== null && benchReturn30d !== null
+      ? (isBullishAction ? return30d > benchReturn30d : return30d < benchReturn30d)
+      : null;
 
     const { error } = await supabase.from('recommendation_outcomes').insert({
       recommendation_id: item.id,
@@ -245,8 +322,8 @@ async function evaluateOutcomes(supabase: SB): Promise<void> {
       benchmark_return_1d: benchReturn1d,
       benchmark_return_7d: benchReturn7d,
       benchmark_return_30d: benchReturn30d,
-      beat_benchmark_7d: return7d !== null && benchReturn7d !== null ? return7d > benchReturn7d : null,
-      beat_benchmark_30d: return30d !== null && benchReturn30d !== null ? return30d > benchReturn30d : null,
+      beat_benchmark_7d: beatBench7d,
+      beat_benchmark_30d: beatBench30d,
       score_bucket: compositeScore !== null ? scoreBucket(compositeScore) : null,
       confidence_bucket: confidenceBucket(confidence),
     });
@@ -369,68 +446,75 @@ async function runBacktest(supabase: SB, fromDate: string, toDate: string): Prom
     // Run optimizer
     const result = runOptimizerCore(scores, userParams, currentHoldings, new Map());
 
-    // Execute actions (simplified)
-    for (const action of result.actions) {
-      if (action.action === 'HOLD') continue;
-      const price = prices.get(action.ticker);
-      if (!price) continue;
+    // Collect non-HOLD actions and track forward returns for quality metrics
+    const actionableRecs = result.actions.filter((a) => a.action !== 'HOLD' && prices.has(a.ticker));
+    totalRecs += actionableRecs.length;
 
-      totalRecs++;
+    for (const action of actionableRecs) {
+      const price = prices.get(action.ticker)!;
+      const isBullish = action.action === 'BUY' || action.action === 'ADD';
 
-      // Track forward returns for quality metrics
       const price7d = await getPriceAfterDays(supabase, action.ticker, date, 7);
       const price30d = await getPriceAfterDays(supabase, action.ticker, date, 30);
       if (price7d) {
         const ret7d = (price7d - price) / price;
         total7d++;
-        if (action.action === 'BUY' || action.action === 'ADD') {
-          buyReturns7d.push(ret7d);
-          if (ret7d > 0) hits7d++;
-        } else if (action.action === 'SELL' || action.action === 'REDUCE') {
-          sellReturns7d.push(ret7d);
-          if (ret7d < 0) hits7d++; // SELL is "right" if price went down
-        }
+        if (isBullish) { buyReturns7d.push(ret7d); if (ret7d > 0) hits7d++; }
+        else { sellReturns7d.push(ret7d); if (ret7d < 0) hits7d++; }
       }
       if (price30d) {
         const ret30d = (price30d - price) / price;
         total30d++;
-        if (action.action === 'BUY' || action.action === 'ADD') {
-          if (ret30d > 0) hits30d++;
-        } else if (action.action === 'SELL' || action.action === 'REDUCE') {
-          if (ret30d < 0) hits30d++;
-        }
+        if (isBullish) { if (ret30d > 0) hits30d++; }
+        else { if (ret30d < 0) hits30d++; }
       }
+    }
 
-      // Execute trade
-      const targetValue = portfolioValue * (action.targetWeightPct / 100);
+    // Execute trades: cash-generating first (SELL/REDUCE), then cash-consuming (BUY/ADD).
+    // This prevents skipping valid buys that should be funded by same-day reductions.
+    const cashGenerating = actionableRecs.filter((a) => a.action === 'SELL' || a.action === 'REDUCE');
+    const cashConsuming = actionableRecs.filter((a) => a.action === 'BUY' || a.action === 'ADD');
+
+    for (const action of cashGenerating) {
+      const price = prices.get(action.ticker)!;
       const currentHolding = holdings.get(action.ticker);
-      const currentValue = currentHolding ? currentHolding.quantity * price : 0;
-      const tradeValue = targetValue - currentValue;
-      totalTurnover += Math.abs(tradeValue) / portfolioValue;
+      if (!currentHolding) continue;
 
       if (action.action === 'SELL') {
-        if (currentHolding) {
-          cash += currentHolding.quantity * price;
-          holdings.delete(action.ticker);
-        }
-      } else if (action.action === 'BUY' || action.action === 'ADD') {
-        if (tradeValue > 0 && cash >= tradeValue) {
-          const qty = tradeValue / price;
-          const existing = holdings.get(action.ticker);
-          if (existing) {
-            existing.quantity += qty;
-          } else {
-            holdings.set(action.ticker, { quantity: qty, price, weightPct: action.targetWeightPct });
-          }
-          cash -= tradeValue;
-        }
-      } else if (action.action === 'REDUCE') {
-        if (currentHolding && tradeValue < 0) {
-          const reduceQty = Math.abs(tradeValue) / price;
+        totalTurnover += (currentHolding.quantity * price) / portfolioValue;
+        cash += currentHolding.quantity * price;
+        holdings.delete(action.ticker);
+      } else {
+        // REDUCE
+        const targetValue = portfolioValue * (action.targetWeightPct / 100);
+        const currentValue = currentHolding.quantity * price;
+        const reduceAmount = currentValue - targetValue;
+        if (reduceAmount > 0) {
+          totalTurnover += reduceAmount / portfolioValue;
+          const reduceQty = reduceAmount / price;
           currentHolding.quantity = Math.max(0, currentHolding.quantity - reduceQty);
-          cash += Math.abs(tradeValue);
+          cash += reduceAmount;
           if (currentHolding.quantity < 0.001) holdings.delete(action.ticker);
         }
+      }
+    }
+
+    for (const action of cashConsuming) {
+      const price = prices.get(action.ticker)!;
+      const targetValue = portfolioValue * (action.targetWeightPct / 100);
+      const existing = holdings.get(action.ticker);
+      const currentValue = existing ? existing.quantity * price : 0;
+      const buyAmount = targetValue - currentValue;
+
+      if (buyAmount > 0 && cash >= buyAmount) {
+        totalTurnover += buyAmount / portfolioValue;
+        const qty = buyAmount / price;
+        if (existing) {
+          existing.quantity += qty;
+        } else {
+          holdings.set(action.ticker, { quantity: qty, price, weightPct: action.targetWeightPct });
+        }
+        cash -= buyAmount;
       }
     }
   }

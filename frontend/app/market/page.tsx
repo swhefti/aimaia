@@ -293,7 +293,7 @@ export default function MarketPage() {
         <div className="flex items-center gap-3">
           <BarChart3 className="h-5 w-5 text-accent-blue" />
           <h1 className="text-xl font-bold text-white">Market</h1>
-          <span className="text-xs text-gray-500">(Version 0.7)</span>
+          <span className="text-xs text-gray-500">(Version 0.71)</span>
           <span className="text-sm text-gray-500">{ASSET_UNIVERSE.length} assets</span>
         </div>
         <div className="flex items-center gap-4">
