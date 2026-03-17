@@ -326,12 +326,15 @@ export default function AdminDashboardPage() {
               Other
             </button>
           )}
-          <div className="mt-6 pt-4 border-t border-gray-800">
-            <a
-              href="/admin/data-flow"
-              className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
-            >
+          <div className="mt-6 pt-4 border-t border-gray-800 space-y-1">
+            <a href="/admin/data-flow" className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
               Data Flow Diagram
+            </a>
+            <a href="/admin/optimizer-flow" className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors pl-6">
+              Optimizer &amp; Calibrator
+            </a>
+            <a href="/admin/recommendation-flow" className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors pl-6">
+              Recommendations &amp; Risk Model
             </a>
           </div>
         </nav>
