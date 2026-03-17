@@ -17,143 +17,31 @@ interface ConfigItem {
  * Key → feature group mapping
  * ──────────────────────────────────────────────*/
 
-const FEATURE_GROUPS: { id: string; label: string; keys: string[]; weightKeys?: string[] }[] = [
-  {
-    id: 'sentiment',
-    label: 'Sentiment Agent',
-    keys: [
-      'model_sentiment',
-      'model_sentiment_filter',
-      'prompt_sentiment',
-      'prompt_sentiment_filter',
-      'max_tokens_sentiment',
-      'sentiment_lookback_days',
-      'sentiment_min_articles_crypto',
-      'sentiment_decay_factor',
-    ],
-  },
-  {
-    id: 'technical',
-    label: 'Technical Agent',
-    keys: [
-      'technical_lookback_days',
-      'technical_min_rows_confidence_high',
-      'technical_min_rows_confidence_low',
-      'subweight_technical_macd',
-      'subweight_technical_ema',
-      'subweight_technical_rsi',
-      'subweight_technical_bollinger',
-      'subweight_technical_volume',
-    ],
-    weightKeys: [
-      'subweight_technical_macd',
-      'subweight_technical_ema',
-      'subweight_technical_rsi',
-      'subweight_technical_bollinger',
-      'subweight_technical_volume',
-    ],
-  },
-  {
-    id: 'fundamental',
-    label: 'Fundamental Agent',
-    keys: [
-      'subweight_fundamental_pe',
-      'subweight_fundamental_revenue',
-      'subweight_fundamental_margin',
-      'subweight_fundamental_roe',
-      'subweight_fundamental_debt',
-    ],
-    weightKeys: [
-      'subweight_fundamental_pe',
-      'subweight_fundamental_revenue',
-      'subweight_fundamental_margin',
-      'subweight_fundamental_roe',
-      'subweight_fundamental_debt',
-    ],
-  },
-  {
-    id: 'conclusion',
-    label: 'Conclusion Agent',
-    keys: [
-      'model_conclusion',
-      'prompt_conclusion',
-      'max_tokens_conclusion',
-      'max_chars_conclusion',
-    ],
-  },
-  {
-    id: 'synthesis',
-    label: 'Synthesis / Briefing',
-    keys: [
-      'model_synthesis',
-      'prompt_synthesis_system',
-      'max_tokens_synthesis',
-      'max_chars_synthesis_narrative',
-    ],
-  },
-  {
-    id: 'ai_probability',
-    label: 'AI Probability',
-    keys: [
-      'model_ai_probability_opus',
-      'model_ai_probability_sonnet',
-      'prompt_ai_probability',
-      'max_tokens_ai_probability',
-      'prob_sigmoid_steepness',
-      'prob_sigmoid_midpoint',
-      'prob_ai_score_weight',
-      'prob_progress_bonus_max',
-      'prob_diversification_bonus_max',
-      'prob_time_bonus_max',
-      'prob_no_positions_cap',
-    ],
-  },
-  {
-    id: 'risk_report',
-    label: 'Risk Report',
-    keys: [
-      'model_risk_report',
-      'prompt_risk_report',
-      'max_tokens_risk_report',
-    ],
-  },
-  {
-    id: 'composite_weights',
-    label: 'Composite Weights',
-    keys: [
-      'weight_stock_technical',
-      'weight_stock_sentiment',
-      'weight_stock_fundamental',
-      'weight_stock_regime',
-      'weight_crypto_technical',
-      'weight_crypto_sentiment',
-      'weight_crypto_fundamental',
-      'weight_crypto_regime',
-      'weight_crypto_sentiment_missing_technical',
-      'weight_crypto_sentiment_missing_regime',
-    ],
-    // Multiple sub-groups that each must sum to 1.0
-    weightKeys: [
-      'weight_stock_technical',
-      'weight_stock_sentiment',
-      'weight_stock_fundamental',
-      'weight_stock_regime',
-    ],
-  },
-];
+import { CONFIG_GROUPS, CONFIG_MANIFEST, getManifestEntry, type ConfigStatus } from '@shared/lib/admin-config-manifest';
 
-// Build a reverse lookup: key → feature group id
+// Build lookups from manifest
 const KEY_TO_FEATURE: Record<string, string> = {};
-for (const group of FEATURE_GROUPS) {
-  for (const key of group.keys) {
-    KEY_TO_FEATURE[key] = group.id;
-  }
+for (const entry of CONFIG_MANIFEST) {
+  KEY_TO_FEATURE[entry.key] = entry.group;
 }
 
-const FEATURE_ORDER = FEATURE_GROUPS.map((g) => g.id);
+const FEATURE_ORDER = CONFIG_GROUPS.map((g) => g.id);
 const FEATURE_LABELS: Record<string, string> = Object.fromEntries(
-  FEATURE_GROUPS.map((g) => [g.id, g.label])
+  CONFIG_GROUPS.map((g) => [g.id, g.label])
 );
+
+// Weight validation groups from manifest
+const WEIGHT_KEYS_BY_GROUP: Record<string, string[]> = {};
+for (const g of CONFIG_GROUPS) {
+  if (g.weightKeys) WEIGHT_KEYS_BY_GROUP[g.id] = g.weightKeys;
+}
+
+const STATUS_COLORS: Record<ConfigStatus, string> = {
+  live: 'bg-green-500/20 text-green-400',
+  manual_only: 'bg-amber-500/20 text-amber-400',
+  legacy: 'bg-gray-500/20 text-gray-400',
+  dead: 'bg-red-500/20 text-red-400',
+};
 
 const MODEL_OPTIONS = [
   'claude-opus-4-6',
@@ -163,7 +51,9 @@ const MODEL_OPTIONS = [
 ];
 
 function getNumberStep(key: string): string {
-  if (key.startsWith('weight_') || key.startsWith('subweight_') || key.includes('decay') || key.includes('midpoint') || key.includes('steepness')) return '0.01';
+  const entry = getManifestEntry(key);
+  if (entry?.max !== undefined && entry.max <= 1) return '0.01';
+  if (key.startsWith('weight_') || key.startsWith('subweight_') || key.includes('decay')) return '0.01';
   return '1';
 }
 
@@ -202,11 +92,10 @@ export default function AdminDashboardPage() {
     fetchConfig();
   }, [fetchConfig]);
 
-  // Group config items by feature group (using key mapping, not DB group_name)
+  // Group config items by feature group (using manifest key mapping)
   const groupedConfig = FEATURE_ORDER.reduce<Record<string, ConfigItem[]>>((acc, featureId) => {
-    const group = FEATURE_GROUPS.find((g) => g.id === featureId)!;
-    // Filter config items whose key belongs to this feature group
-    acc[featureId] = group.keys
+    const groupKeys = CONFIG_MANIFEST.filter((e) => e.group === featureId).map((e) => e.key);
+    acc[featureId] = groupKeys
       .map((key) => config.find((c) => c.key === key))
       .filter((c): c is ConfigItem => c !== undefined);
     return acc;
@@ -267,11 +156,8 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const getWeightGroup = (featureId: string) => FEATURE_GROUPS.find((g) => g.id === featureId);
-
   const computeWeightSum = (featureId: string): number => {
-    const group = getWeightGroup(featureId);
-    const weightKeys = group?.weightKeys;
+    const weightKeys = WEIGHT_KEYS_BY_GROUP[featureId];
     if (!weightKeys) return 0;
     const items = (groupedConfig[featureId] ?? []).filter((c) => weightKeys.includes(c.key));
     return items.reduce((sum, c) => {
@@ -326,15 +212,16 @@ export default function AdminDashboardPage() {
               Other
             </button>
           )}
-          <div className="mt-6 pt-4 border-t border-gray-800 space-y-1">
-            <a href="/admin/data-flow" className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
+          <div className="mt-6 pt-4 border-t border-gray-800">
+            <div className="text-xs text-gray-600 uppercase tracking-wider px-3 mb-2">Documentation</div>
+            <a href="/admin/data-flow" className="block w-full text-left px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
               Data Flow Diagram
             </a>
-            <a href="/admin/optimizer-flow" className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors pl-6">
+            <a href="/admin/optimizer-flow" className="block w-full text-left px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
               Optimizer &amp; Calibrator
             </a>
-            <a href="/admin/recommendation-flow" className="block w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors pl-6">
-              Recommendations &amp; Risk Model
+            <a href="/admin/recommendation-flow" className="block w-full text-left px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
+              Recommendations &amp; Risk
             </a>
           </div>
         </nav>
@@ -350,7 +237,7 @@ export default function AdminDashboardPage() {
             <div className="flex items-center gap-3">
               {activeGroup === 'composite_weights' ? (
                 <CompositeWeightSums items={groupedConfig['composite_weights'] ?? []} getDisplayValue={getDisplayValue} />
-              ) : getWeightGroup(activeGroup)?.weightKeys ? (
+              ) : WEIGHT_KEYS_BY_GROUP[activeGroup] ? (
                 <WeightSumIndicator sum={computeWeightSum(activeGroup)} />
               ) : null}
               {activeGroup !== '_other' && (
@@ -417,10 +304,24 @@ function ConfigField({
     <div className={`p-4 rounded-lg border ${isChanged ? 'border-amber-500/50 bg-amber-500/5' : 'border-gray-800 bg-[#282c35]'}`}>
       <div className="flex items-start justify-between mb-2">
         <div>
-          <label className="text-sm font-medium text-white">{item.label}</label>
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-white">{item.label}</label>
+            {(() => {
+              const meta = getManifestEntry(item.key);
+              if (meta && meta.status !== 'live') {
+                return <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold ${STATUS_COLORS[meta.status]}`}>{meta.status}</span>;
+              }
+              return null;
+            })()}
+          </div>
           {item.description && (
             <p className="text-xs text-gray-500 mt-0.5">{item.description}</p>
           )}
+          {(() => {
+            const meta = getManifestEntry(item.key);
+            if (meta?.warning) return <p className="text-xs text-amber-400 mt-0.5">{meta.warning}</p>;
+            return null;
+          })()}
         </div>
         <span className="text-[10px] text-gray-600 whitespace-nowrap ml-4">{updatedStr}</span>
       </div>

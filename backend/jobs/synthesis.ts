@@ -231,10 +231,17 @@ function buildExplanationPrompt(
     diversificationScore?: number; cryptoAllocationPct?: number;
   },
   macroEvents: string[],
+  /** System prompt loaded from config (prompt_optimizer_explainer). Empty = use default. */
+  systemPromptOverride?: string,
 ): string {
   const lines: string[] = [];
-  lines.push('You are an investment communication writer. The portfolio optimizer has determined the following target changes.');
-  lines.push('Your job is to explain WHY these changes make sense in plain language, including how they affect portfolio risk. Do NOT suggest alternatives or override the optimizer.');
+  // Use configurable system prompt if provided, otherwise default
+  if (systemPromptOverride) {
+    lines.push(systemPromptOverride);
+  } else {
+    lines.push('You are an investment communication writer. The portfolio optimizer has determined the following target changes.');
+    lines.push('Your job is to explain WHY these changes make sense in plain language, including how they affect portfolio risk. Do NOT suggest alternatives or override the optimizer.');
+  }
   lines.push('');
   lines.push(`Portfolio: $${ctx.totalValue.toLocaleString()} | Cash: ${ctx.cashPct.toFixed(1)}% | Risk profile: ${ctx.riskProfile}`);
 
@@ -284,9 +291,10 @@ async function generateExplanation(
   macroEvents: string[],
   model: string,
   maxTokens: number,
+  systemPromptOverride?: string,
 ): Promise<ExplanationOutput | null> {
   try {
-    const prompt = buildExplanationPrompt(actions, ctx, macroEvents);
+    const prompt = buildExplanationPrompt(actions, ctx, macroEvents, systemPromptOverride);
     const response = await anthropic.messages.create({
       model, max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
@@ -426,10 +434,12 @@ async function runForPortfolio(
     await supabase.from('synthesis_runs').delete().in('id', runIds);
   }
 
-  const [synthesisModel, maxTokensSynthesis] = await Promise.all([
+  const [synthesisModel, maxTokensSynthesisRaw, explainerPrompt] = await Promise.all([
     getConfig('model_synthesis', SYNTHESIS_MODEL),
     getConfigNumber('max_tokens_synthesis', 4096),
+    getConfig('prompt_optimizer_explainer', ''),
   ]);
+  const maxTokensSynthesis = typeof maxTokensSynthesisRaw === 'number' ? maxTokensSynthesisRaw : 4096;
 
   const explanation = await generateExplanation(
     anthropic, optimizerResult.actions,
@@ -442,6 +452,7 @@ async function runForPortfolio(
       cryptoAllocationPct: optimizerResult.riskSummary.cryptoAllocationPct,
     },
     macroEvents, synthesisModel, maxTokensSynthesis,
+    explainerPrompt || undefined,
   );
 
   const llmSucceeded = !!explanation;

@@ -2,11 +2,25 @@ import { createClient } from '@supabase/supabase-js';
 
 /**
  * Runtime configuration loader — reads from system_config table.
- * Caches values in memory for the duration of a serverless cold start.
- * Each warm invocation reuses the cache; a new cold start clears it.
+ * Uses a 5-minute TTL cache so admin changes propagate within minutes.
  */
 
-const cache = new Map<string, string>();
+const cache = new Map<string, { value: string; ts: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function isFresh(key: string): boolean {
+  const entry = cache.get(key);
+  return !!entry && (Date.now() - entry.ts) < CACHE_TTL_MS;
+}
+
+function getCached(key: string): string | undefined {
+  if (!isFresh(key)) return undefined;
+  return cache.get(key)!.value;
+}
+
+function setCached(key: string, value: string): void {
+  cache.set(key, { value, ts: Date.now() });
+}
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -16,7 +30,8 @@ function getServiceSupabase() {
 }
 
 export async function getConfig(key: string, fallback: string): Promise<string> {
-  if (cache.has(key)) return cache.get(key)!;
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
 
   try {
     const supabase = getServiceSupabase();
@@ -27,14 +42,14 @@ export async function getConfig(key: string, fallback: string): Promise<string> 
       .single();
 
     if (error || !data) {
-      cache.set(key, fallback);
+      setCached(key, fallback);
       return fallback;
     }
 
-    cache.set(key, data.value as string);
+    setCached(key, data.value as string);
     return data.value as string;
   } catch {
-    cache.set(key, fallback);
+    setCached(key, fallback);
     return fallback;
   }
 }
@@ -45,15 +60,11 @@ export async function getConfigNumber(key: string, fallback: number): Promise<nu
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
-/**
- * Batch-load multiple config keys in a single DB query.
- * Returns a map of key → value. Missing keys use the provided defaults.
- */
 export async function getConfigBatch(
   defaults: Record<string, string>
 ): Promise<Record<string, string>> {
   const keys = Object.keys(defaults);
-  const uncached = keys.filter((k) => !cache.has(k));
+  const uncached = keys.filter((k) => !isFresh(k));
 
   if (uncached.length > 0) {
     try {
@@ -64,21 +75,20 @@ export async function getConfigBatch(
         .in('key', uncached);
 
       for (const row of data ?? []) {
-        cache.set(row.key as string, row.value as string);
+        setCached(row.key as string, row.value as string);
       }
     } catch {
       // Use defaults for any uncached keys
     }
 
-    // Fill remaining uncached with defaults
     for (const k of uncached) {
-      if (!cache.has(k)) cache.set(k, defaults[k]!);
+      if (!isFresh(k)) setCached(k, defaults[k]!);
     }
   }
 
   const result: Record<string, string> = {};
   for (const k of keys) {
-    result[k] = cache.get(k) ?? defaults[k]!;
+    result[k] = getCached(k) ?? defaults[k]!;
   }
   return result;
 }

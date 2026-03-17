@@ -2,11 +2,21 @@ import { createClient } from '@supabase/supabase-js';
 
 /**
  * Runtime configuration loader for batch jobs.
- * Reads from system_config table. Caches in memory for the process lifetime.
- * Standalone version — no Next.js dependencies.
+ * Reads from system_config table. 10-minute TTL cache.
+ * Batch jobs are short-lived so this mainly prevents redundant queries within a run.
  */
 
-const cache = new Map<string, string>();
+const cache = new Map<string, { value: string; ts: number }>();
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function isFresh(key: string): boolean {
+  const entry = cache.get(key);
+  return !!entry && (Date.now() - entry.ts) < CACHE_TTL_MS;
+}
+
+function setCached(key: string, value: string): void {
+  cache.set(key, { value, ts: Date.now() });
+}
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -16,15 +26,15 @@ function getServiceSupabase() {
 }
 
 export async function getConfig(key: string, fallback: string): Promise<string> {
-  if (cache.has(key)) return cache.get(key)!;
+  if (isFresh(key)) return cache.get(key)!.value;
   try {
     const supabase = getServiceSupabase();
     const { data, error } = await supabase.from('system_config').select('value').eq('key', key).single();
-    if (error || !data) { cache.set(key, fallback); return fallback; }
-    cache.set(key, data.value as string);
+    if (error || !data) { setCached(key, fallback); return fallback; }
+    setCached(key, data.value as string);
     return data.value as string;
   } catch {
-    cache.set(key, fallback);
+    setCached(key, fallback);
     return fallback;
   }
 }
@@ -37,17 +47,20 @@ export async function getConfigNumber(key: string, fallback: number): Promise<nu
 
 export async function getConfigBatch(defaults: Record<string, string>): Promise<Record<string, string>> {
   const keys = Object.keys(defaults);
-  const uncached = keys.filter((k) => !cache.has(k));
+  const uncached = keys.filter((k) => !isFresh(k));
   if (uncached.length > 0) {
     try {
       const supabase = getServiceSupabase();
       const { data } = await supabase.from('system_config').select('key, value').in('key', uncached);
-      for (const row of data ?? []) cache.set(row.key as string, row.value as string);
+      for (const row of data ?? []) setCached(row.key as string, row.value as string);
     } catch { /* use defaults */ }
-    for (const k of uncached) { if (!cache.has(k)) cache.set(k, defaults[k]!); }
+    for (const k of uncached) { if (!isFresh(k)) setCached(k, defaults[k]!); }
   }
   const result: Record<string, string> = {};
-  for (const k of keys) result[k] = cache.get(k) ?? defaults[k]!;
+  for (const k of keys) {
+    const entry = cache.get(k);
+    result[k] = (entry && (Date.now() - entry.ts) < CACHE_TTL_MS) ? entry.value : defaults[k]!;
+  }
   return result;
 }
 
