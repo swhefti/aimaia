@@ -43,20 +43,25 @@ type SB = ReturnType<typeof getServiceSupabase>;
 // Calibration loader
 // ---------------------------------------------------------------------------
 
-// Minimum samples required per score bucket before calibrated values are trusted.
-// Below this threshold, the optimizer falls back to heuristic expected returns.
-const MIN_CALIBRATION_SAMPLES = 20;
+import { CALIBRATION_LIVE_ENABLED } from '../../shared/lib/calibration-config.js';
 
 async function loadCalibration(supabase: SB): Promise<CalibrationMap> {
   const cal = new Map<string, number>();
+
+  // Global kill switch check
+  if (!CALIBRATION_LIVE_ENABLED) {
+    console.log('[Synthesis] Calibration globally disabled — using heuristic only');
+    return cal;
+  }
+
   const { data } = await supabase
     .from('score_calibration')
-    .select('score_bucket, calibrated_expected_return, sample_count')
+    .select('score_bucket, calibrated_expected_return, is_live_eligible')
     .is('asset_type', null)
     .not('calibrated_expected_return', 'is', null);
   for (const row of data ?? []) {
-    // Safety gate: only trust calibration with enough samples
-    if (Number(row.sample_count ?? 0) >= MIN_CALIBRATION_SAMPLES) {
+    // Only use rows marked as live-eligible by the calibration job
+    if (row.is_live_eligible === true) {
       cal.set(row.score_bucket as string, Number(row.calibrated_expected_return));
     }
   }

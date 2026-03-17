@@ -10,6 +10,7 @@ import {
 } from '@shared/lib/optimizer-core';
 import type { AssetType } from '@shared/types/assets';
 import type { RiskProfile, VolatilityTolerance } from '@shared/types/portfolio';
+import { CALIBRATION_LIVE_ENABLED } from '@shared/lib/calibration-config';
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -294,17 +295,18 @@ export async function POST(req: NextRequest) {
     const candidateTickers = pricedScores.map((s) => s.ticker);
     const covData = await loadCovarianceData(supabase, candidateTickers);
 
-    // Load calibration data (if available, with sample-count safety gate)
-    const MIN_CALIBRATION_SAMPLES = 20;
+    // Load calibration data — only live-eligible rows as determined by --calibrate job
     const calibration: CalibrationMap = new Map();
-    const { data: calData } = await supabase
-      .from('score_calibration')
-      .select('score_bucket, calibrated_expected_return, sample_count')
-      .is('asset_type', null)
-      .not('calibrated_expected_return', 'is', null);
-    for (const row of calData ?? []) {
-      if (Number(row.sample_count ?? 0) >= MIN_CALIBRATION_SAMPLES) {
-        calibration.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+    if (CALIBRATION_LIVE_ENABLED) {
+      const { data: calData } = await supabase
+        .from('score_calibration')
+        .select('score_bucket, calibrated_expected_return, is_live_eligible')
+        .is('asset_type', null)
+        .not('calibrated_expected_return', 'is', null);
+      for (const row of calData ?? []) {
+        if (row.is_live_eligible === true) {
+          calibration.set(row.score_bucket as string, Number(row.calibrated_expected_return));
+        }
       }
     }
 

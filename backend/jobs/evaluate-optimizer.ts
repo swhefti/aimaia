@@ -33,12 +33,10 @@ import type { AssetType } from '../../shared/types/assets.js';
 
 type SB = ReturnType<typeof getServiceSupabase>;
 
-/**
- * Minimum samples per score bucket before calibrated expected return is produced.
- * Below this, the calibration row is written but calibrated_expected_return is null,
- * and the optimizer falls back to heuristic.
- */
-const MIN_CALIBRATION_SAMPLES = 20;
+import {
+  MIN_CALIBRATION_SAMPLES, PREFERRED_30D_SAMPLES,
+  CALIBRATION_7D_ONLY_WEIGHT, computeEligibility,
+} from '../../shared/lib/calibration-config.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -550,7 +548,6 @@ async function runBacktest(supabase: SB, fromDate: string, toDate: string): Prom
 async function calibrate(supabase: SB): Promise<void> {
   console.log('[Calibrate] Computing calibrated expected-return mapping from score_outcomes...');
 
-  // Primary source: score_outcomes (all-asset, broader dataset)
   const { data: outcomes } = await supabase
     .from('score_outcomes')
     .select('composite_score, confidence, asset_type, return_7d, return_30d, score_bucket')
@@ -564,35 +561,35 @@ async function calibrate(supabase: SB): Promise<void> {
 
   console.log(`[Calibrate] Analyzing ${outcomes.length} score outcomes`);
 
-  // Bucket analysis
   const buckets = new Map<string, { returns7d: number[]; returns30d: number[]; count: number }>();
   const assetBuckets = new Map<string, { returns7d: number[]; returns30d: number[]; count: number }>();
 
   for (const o of outcomes) {
     const bucket = o.score_bucket as string ?? 'unknown';
     const assetType = o.asset_type as string ?? 'unknown';
-
     if (!buckets.has(bucket)) buckets.set(bucket, { returns7d: [], returns30d: [], count: 0 });
     if (!assetBuckets.has(`${bucket}|${assetType}`)) assetBuckets.set(`${bucket}|${assetType}`, { returns7d: [], returns30d: [], count: 0 });
-
-    const entry = buckets.get(bucket)!;
-    const assetEntry = assetBuckets.get(`${bucket}|${assetType}`)!;
+    const entry = buckets.get(bucket)!; const assetEntry = assetBuckets.get(`${bucket}|${assetType}`)!;
     entry.count++; assetEntry.count++;
-
     if (o.return_7d != null) { entry.returns7d.push(Number(o.return_7d)); assetEntry.returns7d.push(Number(o.return_7d)); }
     if (o.return_30d != null) { entry.returns30d.push(Number(o.return_30d)); assetEntry.returns30d.push(Number(o.return_30d)); }
   }
 
-  const rows: Array<{
+  interface CalRow {
     score_bucket: string; asset_type: string | null; sample_count: number;
+    sample_count_7d: number; sample_count_30d: number;
     avg_forward_return_7d: number | null; avg_forward_return_30d: number | null;
-    median_forward_return_7d: number | null; hit_rate_7d: number | null;
-    hit_rate_30d: number | null; calibrated_expected_return: number | null;
-  }> = [];
+    median_forward_return_7d: number | null; hit_rate_7d: number | null; hit_rate_30d: number | null;
+    calibrated_expected_return: number | null;
+    is_live_eligible: boolean; eligibility_reason: string;
+    calibration_source: string; updated_at: string;
+  }
+  const rows: CalRow[] = [];
+  const now = new Date().toISOString();
 
-  console.log('\n========== CALIBRATION RESULTS ==========');
-  console.log('Score Bucket     | N    | Avg 7d    | Avg 30d   | Hit 7d | Cal. E[R]  | Gated');
-  console.log('-----------------|------|-----------|-----------|--------|------------|------');
+  console.log('\n========== CALIBRATION ROLLOUT STATUS ==========');
+  console.log('Score Bucket     | N    | N_7d | N_30d| Cal. E[R]  | Live? | Reason');
+  console.log('-----------------|------|------|------|------------|-------|-------------------------------');
 
   const bucketMidScores: Record<string, number> = {
     strong_buy: 0.80, buy: 0.40, hold: 0, sell: -0.40, strong_sell: -0.80,
@@ -608,31 +605,48 @@ async function calibrate(supabase: SB): Promise<void> {
 
     const observed30dAnn = avg30d !== null ? avg30d * (252 / 30) : null;
     const observed7dAnn = avg7d !== null ? avg7d * (252 / 7) : null;
-    const observedAnn = observed30dAnn ?? observed7dAnn ?? null;
     const heuristicER = (bucketMidScores[bucket] ?? 0) * 0.30;
 
-    // Safety gate: only produce a calibrated value when sample count >= threshold
-    const meetsThreshold = data.count >= MIN_CALIBRATION_SAMPLES;
-    const calibratedER = meetsThreshold && observedAnn !== null
-      ? observedAnn * 0.7 + heuristicER * 0.3
-      : null; // null = heuristic fallback, not trusted yet
+    // Compute calibrated E[R]: prefer 30d, accept 7d at reduced weight
+    let calibratedER: number | null = null;
+    const has30d = data.returns30d.length >= PREFERRED_30D_SAMPLES;
+    if (data.count >= MIN_CALIBRATION_SAMPLES) {
+      if (has30d && observed30dAnn !== null) {
+        calibratedER = observed30dAnn * 0.7 + heuristicER * 0.3;
+      } else if (observed7dAnn !== null) {
+        // 7d-only: reduce calibration influence
+        calibratedER = observed7dAnn * CALIBRATION_7D_ONLY_WEIGHT + heuristicER * (1 - CALIBRATION_7D_ONLY_WEIGHT);
+      }
+    }
 
-    rows.push({
-      score_bucket: bucket, asset_type: null, sample_count: data.count,
-      avg_forward_return_7d: avg7d, avg_forward_return_30d: avg30d,
-      median_forward_return_7d: median7d, hit_rate_7d: hitRate7d,
-      hit_rate_30d: hitRate30d, calibrated_expected_return: calibratedER,
+    // Compute eligibility
+    const { eligible, reason } = computeEligibility({
+      sampleCount: data.count,
+      sampleCount7d: data.returns7d.length,
+      sampleCount30d: data.returns30d.length,
+      calibratedExpectedReturn: calibratedER,
+      updatedAt: now,
     });
 
-    const gateLabel = meetsThreshold ? 'OK' : `<${MIN_CALIBRATION_SAMPLES}`;
+    rows.push({
+      score_bucket: bucket, asset_type: null,
+      sample_count: data.count, sample_count_7d: data.returns7d.length, sample_count_30d: data.returns30d.length,
+      avg_forward_return_7d: avg7d, avg_forward_return_30d: avg30d,
+      median_forward_return_7d: median7d, hit_rate_7d: hitRate7d, hit_rate_30d: hitRate30d,
+      calibrated_expected_return: calibratedER,
+      is_live_eligible: eligible, eligibility_reason: reason,
+      calibration_source: 'score_outcomes', updated_at: now,
+    });
+
     const erLabel = calibratedER !== null ? pct(calibratedER) : 'heuristic';
+    const liveLabel = eligible ? 'YES' : 'NO';
     console.log(
-      `${bucket.padEnd(17)}| ${String(data.count).padEnd(5)}| ${avg7d !== null ? pct(avg7d).padEnd(10) : 'N/A       '}| ${avg30d !== null ? pct(avg30d).padEnd(10) : 'N/A       '}| ${hitRate7d !== null ? pct(hitRate7d).padEnd(7) : 'N/A    '}| ${erLabel.padEnd(11)}| ${gateLabel}`
+      `${bucket.padEnd(17)}| ${String(data.count).padEnd(5)}| ${String(data.returns7d.length).padEnd(5)}| ${String(data.returns30d.length).padEnd(5)}| ${erLabel.padEnd(11)}| ${liveLabel.padEnd(6)}| ${reason}`
     );
   }
-  console.log('=========================================\n');
+  console.log('=================================================\n');
 
-  // Per-asset-type buckets (informational, no calibrated ER)
+  // Per-asset-type buckets (informational, never live-eligible at global level)
   for (const [key, data] of assetBuckets) {
     if (data.count < 3) continue;
     const [bucket, assetType] = key.split('|') as [string, string];
@@ -644,9 +658,12 @@ async function calibrate(supabase: SB): Promise<void> {
     const hitRate30d = data.returns30d.length > 0 ? data.returns30d.filter((r) => r > 0).length / data.returns30d.length : null;
     rows.push({
       score_bucket: bucket!, asset_type: assetType!, sample_count: data.count,
+      sample_count_7d: data.returns7d.length, sample_count_30d: data.returns30d.length,
       avg_forward_return_7d: avg7d, avg_forward_return_30d: avg30d,
       median_forward_return_7d: median7d, hit_rate_7d: hitRate7d, hit_rate_30d: hitRate30d,
       calibrated_expected_return: null,
+      is_live_eligible: false, eligibility_reason: 'Per-asset-type bucket (informational only)',
+      calibration_source: 'score_outcomes', updated_at: now,
     });
   }
 
@@ -655,8 +672,9 @@ async function calibrate(supabase: SB): Promise<void> {
     if (error) console.error(`Calibration upsert error for ${row.score_bucket}/${row.asset_type}: ${error.message}`);
   }
 
-  const calibratedCount = rows.filter((r) => r.calibrated_expected_return !== null).length;
-  console.log(`[Calibrate] Persisted ${rows.length} calibration rows (${calibratedCount} with calibrated E[R], ${rows.length - calibratedCount} heuristic fallback)`);
+  const liveCount = rows.filter((r) => r.is_live_eligible).length;
+  const totalGlobal = rows.filter((r) => r.asset_type === null).length;
+  console.log(`[Calibrate] Persisted ${rows.length} rows. Live-eligible: ${liveCount}/${totalGlobal} global buckets.`);
 }
 
 // ===========================================================================
