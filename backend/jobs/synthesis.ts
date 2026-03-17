@@ -34,6 +34,7 @@ import {
   type OptimizerOutput,
   type CalibrationMap,
   type CovarianceData,
+  type OptimizerRuntimeConfig,
 } from '../../shared/lib/optimizer-core.js';
 import type { AssetType } from '../../shared/types/assets.js';
 
@@ -43,14 +44,13 @@ type SB = ReturnType<typeof getServiceSupabase>;
 // Calibration loader
 // ---------------------------------------------------------------------------
 
-import { CALIBRATION_LIVE_ENABLED } from '../../shared/lib/calibration-config.js';
-
 async function loadCalibration(supabase: SB): Promise<CalibrationMap> {
   const cal = new Map<string, number>();
 
-  // Global kill switch check
-  if (!CALIBRATION_LIVE_ENABLED) {
-    console.log('[Synthesis] Calibration globally disabled — using heuristic only');
+  // Check DB-driven kill switch
+  const liveEnabled = await getConfigNumber('calibration_live_enabled', 1);
+  if (liveEnabled === 0) {
+    console.log('[Synthesis] Calibration globally disabled via config — using heuristic only');
     return cal;
   }
 
@@ -60,12 +60,32 @@ async function loadCalibration(supabase: SB): Promise<CalibrationMap> {
     .is('asset_type', null)
     .not('calibrated_expected_return', 'is', null);
   for (const row of data ?? []) {
-    // Only use rows marked as live-eligible by the calibration job
     if (row.is_live_eligible === true) {
       cal.set(row.score_bucket as string, Number(row.calibrated_expected_return));
     }
   }
   return cal;
+}
+
+async function loadOptimizerConfig(): Promise<OptimizerRuntimeConfig> {
+  const [cashFloor, maxPos, maxCrypto, maxChanges, baseReturn, defCorr, corrShrink, minTrade, friction, maxCluster] = await Promise.all([
+    getConfigNumber('optimizer_cash_floor_pct', 0.05),
+    getConfigNumber('optimizer_max_position_pct', 0.30),
+    getConfigNumber('optimizer_max_crypto_pct', 0.40),
+    getConfigNumber('optimizer_max_daily_changes', 5),
+    getConfigNumber('optimizer_base_return_scale', 0.30),
+    getConfigNumber('optimizer_default_correlation', 0.30),
+    getConfigNumber('optimizer_correlation_shrinkage', 0.30),
+    getConfigNumber('optimizer_min_trade_pct', 1.0),
+    getConfigNumber('optimizer_friction_per_trade', 0.001),
+    getConfigNumber('optimizer_max_cluster_pct', 45),
+  ]);
+  return {
+    cashFloorPct: cashFloor, maxPositionPct: maxPos, maxCryptoPct: maxCrypto,
+    maxDailyChanges: maxChanges, baseReturnScale: baseReturn, defaultCorrelation: defCorr,
+    correlationShrinkage: corrShrink, minTradePct: minTrade, frictionPerTrade: friction,
+    maxClusterPct: maxCluster,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +335,7 @@ async function generateExplanation(
 
 async function runForPortfolio(
   supabase: SB, anthropic: Anthropic, portfolioId: string, userId: string, dateStr: string,
-  allScores: OptimizerTickerScore[], calibration: CalibrationMap,
+  allScores: OptimizerTickerScore[], calibration: CalibrationMap, optimizerConfig: OptimizerRuntimeConfig,
 ): Promise<string> {
   console.log(`  [Synthesis] Portfolio ${portfolioId} (user ${userId})`);
 
@@ -387,7 +407,7 @@ async function runForPortfolio(
     maxDrawdownLimitPct: maxDrawdownPct,
   };
 
-  const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, covData, calibration);
+  const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, covData, calibration, optimizerConfig);
 
   // Persist portfolio_risk_metrics (extended v2 fields)
   await supabase.from('portfolio_risk_metrics').upsert({
@@ -540,7 +560,8 @@ async function main(): Promise<void> {
 
   const allScores = await loadScores(supabase, dateStr);
   const calibration = await loadCalibration(supabase);
-  console.log(`[Synthesis] Loaded ${allScores.length} ticker scores, ${calibration.size} calibration entries`);
+  const optConfig = await loadOptimizerConfig();
+  console.log(`[Synthesis] Loaded ${allScores.length} ticker scores, ${calibration.size} calibration entries, optimizer config from DB`);
 
   const { data: portfolios, error } = await supabase.from('portfolios').select('id, user_id').eq('status', 'active');
   if (error) { console.error('Failed to load portfolios:', error.message); process.exit(1); }
@@ -551,7 +572,7 @@ async function main(): Promise<void> {
   let success = 0, errors = 0;
   for (const portfolio of portfolios) {
     try {
-      const result = await runForPortfolio(supabase, anthropic, portfolio.id as string, portfolio.user_id as string, dateStr, allScores, calibration);
+      const result = await runForPortfolio(supabase, anthropic, portfolio.id as string, portfolio.user_id as string, dateStr, allScores, calibration, optConfig);
       if (result.startsWith('ok')) success++; else errors++;
     } catch (err) {
       console.error(`  Error for ${portfolio.id}:`, err instanceof Error ? err.message : err);

@@ -108,18 +108,48 @@ export interface CovarianceData {
 
 export type CalibrationMap = Map<string, number>;
 
+/**
+ * Runtime-configurable optimizer parameters.
+ * Loaded from system_config by callers with DB access.
+ * If not supplied, hardcoded defaults are used.
+ */
+export interface OptimizerRuntimeConfig {
+  baseReturnScale?: number;
+  defaultCorrelation?: number;
+  correlationShrinkage?: number;
+  minTradePct?: number;
+  frictionPerTrade?: number;
+  maxClusterPct?: number;
+  // Hard constraints (override shared/lib/constants.ts defaults)
+  cashFloorPct?: number;
+  maxPositionPct?: number;
+  maxCryptoPct?: number;
+  maxDailyChanges?: number;
+}
+
 // ===========================================================================
-// Constants
+// Constants (defaults — overridden by OptimizerRuntimeConfig when supplied)
 // ===========================================================================
 
-const BASE_RETURN_SCALE = 0.30;
-const LOW_CONFIDENCE_THRESHOLD = 0.3;
-const NEAR_ZERO_THRESHOLD = 0.5;
-const DEFAULT_VOL = 0.25;
-const DEFAULT_CORRELATION = 0.30;  // fallback when pairwise data is missing
-const SHRINKAGE_TOWARD_DEFAULT = 0.3; // blend real correlation toward default
-const MIN_TRADE_VALUE_PCT = 1.0;   // minimum trade size to generate an action (% of portfolio)
-const FRICTION_PENALTY_PER_TRADE = 0.001; // ~10bps per trade as friction proxy
+const DEFAULTS = {
+  baseReturnScale: 0.30,
+  lowConfidenceThreshold: 0.3,
+  nearZeroThreshold: 0.5,
+  defaultVol: 0.25,
+  defaultCorrelation: 0.30,
+  correlationShrinkage: 0.3,
+  minTradePct: 1.0,
+  frictionPerTrade: 0.001,
+  maxClusterPct: 45,
+  // Hard constraints (mirrors constants.ts defaults)
+  cashFloorPct: 0.05,
+  maxPositionPct: 0.30,
+  maxCryptoPct: 0.40,
+  maxDailyChanges: 5,
+};
+
+// Resolved at call time from runtime config + defaults
+let RC = { ...DEFAULTS };
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -147,7 +177,7 @@ const THEME_CLUSTERS: Record<string, string[]> = {
 };
 
 /** Max allocation for any single theme cluster (prevents hidden concentration) */
-const MAX_CLUSTER_PCT = 45;
+// MAX_CLUSTER_PCT is now in RC.maxClusterPct
 
 function getTickerClusters(ticker: string): string[] {
   const clusters: string[] = [];
@@ -177,10 +207,10 @@ function computeExpectedReturn(
   s: OptimizerTickerScore,
   calibration?: CalibrationMap,
 ): number {
-  let mu = s.compositeScore * BASE_RETURN_SCALE;
-  const confMult = s.confidence < LOW_CONFIDENCE_THRESHOLD
-    ? s.confidence / LOW_CONFIDENCE_THRESHOLD * 0.5
-    : 0.5 + (s.confidence - LOW_CONFIDENCE_THRESHOLD) / (1 - LOW_CONFIDENCE_THRESHOLD) * 0.5;
+  let mu = s.compositeScore * RC.baseReturnScale;
+  const confMult = s.confidence < RC.lowConfidenceThreshold
+    ? s.confidence / RC.lowConfidenceThreshold * 0.5
+    : 0.5 + (s.confidence - RC.lowConfidenceThreshold) / (1 - RC.lowConfidenceThreshold) * 0.5;
   mu *= confMult;
   if (s.dataFreshness === 'stale') mu *= 0.7;
   if (s.dataFreshness === 'missing') mu *= 0.3;
@@ -204,7 +234,7 @@ function computeExpectedReturn(
 // ===========================================================================
 
 function getVol(ticker: string, cov: CovarianceData): number {
-  return cov.volatilities.get(ticker) ?? DEFAULT_VOL;
+  return cov.volatilities.get(ticker) ?? RC.defaultVol;
 }
 
 function getCorrelation(a: string, b: string, cov: CovarianceData): number {
@@ -212,14 +242,14 @@ function getCorrelation(a: string, b: string, cov: CovarianceData): number {
   const real = cov.correlations.get(corrKey(a, b));
   if (real !== undefined) {
     // Shrinkage: blend toward default to reduce estimation noise
-    return real * (1 - SHRINKAGE_TOWARD_DEFAULT) + DEFAULT_CORRELATION * SHRINKAGE_TOWARD_DEFAULT;
+    return real * (1 - RC.correlationShrinkage) + RC.defaultCorrelation * RC.correlationShrinkage;
   }
   // No data: use asset-type-aware defaults
   const typeA = ASSET_TYPE_MAP[a]; const typeB = ASSET_TYPE_MAP[b];
   if (typeA === 'crypto' && typeB === 'crypto') return 0.65;
   if (typeA === 'crypto' || typeB === 'crypto') return 0.15;
   // Same broad equity type: moderate correlation
-  return DEFAULT_CORRELATION;
+  return RC.defaultCorrelation;
 }
 
 /** Compute portfolio variance from weights and covariance data. */
@@ -285,10 +315,10 @@ function deriveConfig(params: OptimizerUserParams): OptimizerConfig {
   else if (riskProfile === 'aggressive') concentrationAversion = 0.4;
 
   const turnoverPenalty = 0.005; // ~50bps per unit of turnover
-  const frictionPenalty = FRICTION_PENALTY_PER_TRADE;
+  const frictionPenalty = RC.frictionPerTrade;
 
   const rebalanceBandPct = riskProfile === 'aggressive' ? 1.5 : riskProfile === 'conservative' ? 3.0 : 2.0;
-  const minTradePct = MIN_TRADE_VALUE_PCT;
+  const minTradePct = RC.minTradePct;
   const clusterPenalty = riskProfile === 'conservative' ? 1.5 : 0.8;
 
   return { riskAversion, concentrationAversion, turnoverPenalty, frictionPenalty, rebalanceBandPct, minTradePct, clusterPenalty };
@@ -331,8 +361,8 @@ function computeObjective(
     }
   }
   for (const [, cw] of clusterWeights) {
-    if (cw > MAX_CLUSTER_PCT / 100) {
-      clusterPenalty += config.clusterPenalty * (cw - MAX_CLUSTER_PCT / 100) ** 2;
+    if (cw > RC.maxClusterPct / 100) {
+      clusterPenalty += config.clusterPenalty * (cw - RC.maxClusterPct / 100) ** 2;
     }
   }
 
@@ -377,9 +407,9 @@ function solveWeights(
   const n = tickers.length;
   if (n === 0) return [];
 
-  const investableFrac = 1 - CASH_FLOOR_PCT;
-  const maxSingleFrac = MAX_POSITION_PCT;
-  const maxCryptoFrac = MAX_CRYPTO_ALLOCATION_PCT;
+  const investableFrac = 1 - RC.cashFloorPct;
+  const maxSingleFrac = RC.maxPositionPct;
+  const maxCryptoFrac = RC.maxCryptoPct;
 
   // Initialize: blend of expected-return-proportional and equal-weight
   const equalW = investableFrac / n;
@@ -495,19 +525,31 @@ export function runOptimizerCore(
   scores: OptimizerTickerScore[],
   userParams: OptimizerUserParams,
   currentHoldings: OptimizerCurrentHolding[],
-  /**
-   * Historical data for risk estimation. Accepts either:
-   *   - Map<string, number> (just volatilities, backward compat) — correlations use defaults
-   *   - CovarianceData (full vol + correlation) — enables real covariance optimization
-   */
   historicalData: Map<string, number> | CovarianceData,
   calibration?: CalibrationMap,
+  /** Runtime config from system_config DB. If omitted, uses hardcoded defaults. */
+  runtimeConfig?: OptimizerRuntimeConfig,
 ): OptimizerOutput {
+  // Apply runtime config overrides
+  RC = {
+    ...DEFAULTS,
+    baseReturnScale: runtimeConfig?.baseReturnScale ?? DEFAULTS.baseReturnScale,
+    defaultCorrelation: runtimeConfig?.defaultCorrelation ?? DEFAULTS.defaultCorrelation,
+    correlationShrinkage: runtimeConfig?.correlationShrinkage ?? DEFAULTS.correlationShrinkage,
+    minTradePct: runtimeConfig?.minTradePct ?? DEFAULTS.minTradePct,
+    frictionPerTrade: runtimeConfig?.frictionPerTrade ?? DEFAULTS.frictionPerTrade,
+    maxClusterPct: runtimeConfig?.maxClusterPct ?? DEFAULTS.maxClusterPct,
+    cashFloorPct: runtimeConfig?.cashFloorPct ?? DEFAULTS.cashFloorPct,
+    maxPositionPct: runtimeConfig?.maxPositionPct ?? DEFAULTS.maxPositionPct,
+    maxCryptoPct: runtimeConfig?.maxCryptoPct ?? DEFAULTS.maxCryptoPct,
+    maxDailyChanges: runtimeConfig?.maxDailyChanges ?? DEFAULTS.maxDailyChanges,
+  };
+
   const config = deriveConfig(userParams);
   const currentTickers = new Set(currentHoldings.map((h) => h.ticker));
   const constraintsActive: string[] = [];
-  const maxSinglePct = MAX_POSITION_PCT * 100;
-  const maxCryptoPct = MAX_CRYPTO_ALLOCATION_PCT * 100;
+  const maxSinglePct = RC.maxPositionPct * 100;
+  const maxCryptoPct = RC.maxCryptoPct * 100;
 
   // Normalize historicalData to CovarianceData (backward compat: plain Map = vols only)
   const cov: CovarianceData = 'correlations' in historicalData
@@ -558,16 +600,16 @@ export function runOptimizerCore(
   for (let i = 0; i < optimalWeights.length; i++) {
     if (optimalWeights[i]! < minPosFrac) optimalWeights[i] = 0;
   }
-  normalizeWeights(optimalWeights, 1 - CASH_FLOOR_PCT, MAX_POSITION_PCT);
-  enforceCryptoCap(tickers, optimalWeights, MAX_CRYPTO_ALLOCATION_PCT);
+  normalizeWeights(optimalWeights, 1 - RC.cashFloorPct, RC.maxPositionPct);
+  enforceCryptoCap(tickers, optimalWeights, RC.maxCryptoPct);
 
   // Check constraints
   let cryptoTotal = 0;
   for (let i = 0; i < tickers.length; i++) {
     if (ASSET_TYPE_MAP[tickers[i]!] === 'crypto') cryptoTotal += optimalWeights[i]!;
-    if (optimalWeights[i]! >= MAX_POSITION_PCT - 0.001) constraintsActive.push(`position_cap:${tickers[i]}`);
+    if (optimalWeights[i]! >= RC.maxPositionPct - 0.001) constraintsActive.push(`position_cap:${tickers[i]}`);
   }
-  if (cryptoTotal >= MAX_CRYPTO_ALLOCATION_PCT - 0.01) constraintsActive.push('crypto_cap');
+  if (cryptoTotal >= RC.maxCryptoPct - 0.01) constraintsActive.push('crypto_cap');
 
   // Check cluster concentrations
   const clusterW = new Map<string, number>();
@@ -577,12 +619,12 @@ export function runOptimizerCore(
     }
   }
   for (const [name, w] of clusterW) {
-    if (w > MAX_CLUSTER_PCT / 100) constraintsActive.push(`cluster_cap:${name}`);
+    if (w > RC.maxClusterPct / 100) constraintsActive.push(`cluster_cap:${name}`);
   }
 
   // 7. Build target weights
   const totalWeightPct = optimalWeights.reduce((s, w) => s + w, 0) * 100;
-  const cashWeightPct = Math.max(100 - totalWeightPct, CASH_FLOOR_PCT * 100);
+  const cashWeightPct = Math.max(100 - totalWeightPct, RC.cashFloorPct * 100);
 
   const targetWeights: OptimizerTargetWeight[] = [];
   for (let i = 0; i < tickers.length; i++) {
@@ -646,8 +688,8 @@ function generateActions(
     const delta = targetWeight - currentWeight;
     const confidence = scoreMap.get(ticker)?.confidence ?? 0.5;
 
-    const currentIsZero = currentWeight < NEAR_ZERO_THRESHOLD;
-    const targetIsZero = targetWeight < NEAR_ZERO_THRESHOLD;
+    const currentIsZero = currentWeight < RC.nearZeroThreshold;
+    const targetIsZero = targetWeight < RC.nearZeroThreshold;
 
     // Friction-aware action classification:
     // Use the wider of rebalanceBand and minTrade as the hold threshold
@@ -718,8 +760,8 @@ function generateActions(
 
   // Enforce MAX_DAILY_CHANGES
   const nonHold = actions.filter((a) => a.action !== 'HOLD');
-  if (nonHold.length > MAX_DAILY_CHANGES) {
-    const kept = new Set(nonHold.slice(0, MAX_DAILY_CHANGES).map((a) => a.ticker));
+  if (nonHold.length > RC.maxDailyChanges) {
+    const kept = new Set(nonHold.slice(0, RC.maxDailyChanges).map((a) => a.ticker));
     return actions.filter((a) => a.action === 'HOLD' || kept.has(a.ticker));
   }
 

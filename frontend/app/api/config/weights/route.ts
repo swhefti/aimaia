@@ -13,6 +13,8 @@ export async function GET() {
     weight_crypto_sentiment: 0.25,
     weight_crypto_fundamental: 0.00,
     weight_crypto_regime: 0.25,
+    weight_crypto_sentiment_missing_technical: 0.65,
+    weight_crypto_sentiment_missing_regime: 0.35,
   });
 
   const stock = {
@@ -29,12 +31,12 @@ export async function GET() {
     regime: cfg['weight_crypto_regime']!,
   };
 
-  // When crypto sentiment data is missing, redistribute its weight
+  // Use configured values for crypto sentiment-missing redistribution
   const cryptoSentimentMissing = {
-    technical: crypto.technical + 0.15,
+    technical: cfg['weight_crypto_sentiment_missing_technical']!,
     sentiment: 0,
-    fundamental: crypto.fundamental,
-    regime: crypto.regime + 0.10,
+    fundamental: cfg['weight_crypto_fundamental']!,
+    regime: cfg['weight_crypto_sentiment_missing_regime']!,
   };
 
   return NextResponse.json(

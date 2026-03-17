@@ -7,10 +7,11 @@ import {
   type OptimizerUserParams,
   type CalibrationMap,
   type CovarianceData,
+  type OptimizerRuntimeConfig,
 } from '@shared/lib/optimizer-core';
 import type { AssetType } from '@shared/types/assets';
 import type { RiskProfile, VolatilityTolerance } from '@shared/types/portfolio';
-import { CALIBRATION_LIVE_ENABLED } from '@shared/lib/calibration-config';
+import { getConfigNumber } from '@/lib/config';
 
 function getServiceSupabase() {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
@@ -295,9 +296,10 @@ export async function POST(req: NextRequest) {
     const candidateTickers = pricedScores.map((s) => s.ticker);
     const covData = await loadCovarianceData(supabase, candidateTickers);
 
-    // Load calibration data — only live-eligible rows as determined by --calibrate job
+    // Load calibration (DB-driven kill switch)
     const calibration: CalibrationMap = new Map();
-    if (CALIBRATION_LIVE_ENABLED) {
+    const calLiveEnabled = await getConfigNumber('calibration_live_enabled', 1);
+    if (calLiveEnabled !== 0) {
       const { data: calData } = await supabase
         .from('score_calibration')
         .select('score_bucket, calibrated_expected_return, is_live_eligible')
@@ -310,7 +312,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const result = runOptimizerCore(pricedScores, userParams, [], covData, calibration);
+    // Load optimizer runtime config from DB
+    const [cashFloor, maxPos, maxCrypto, maxChanges, baseReturn, defCorr, corrShrink, minTrade, friction, maxCluster] = await Promise.all([
+      getConfigNumber('optimizer_cash_floor_pct', 0.05),
+      getConfigNumber('optimizer_max_position_pct', 0.30),
+      getConfigNumber('optimizer_max_crypto_pct', 0.40),
+      getConfigNumber('optimizer_max_daily_changes', 5),
+      getConfigNumber('optimizer_base_return_scale', 0.30),
+      getConfigNumber('optimizer_default_correlation', 0.30),
+      getConfigNumber('optimizer_correlation_shrinkage', 0.30),
+      getConfigNumber('optimizer_min_trade_pct', 1.0),
+      getConfigNumber('optimizer_friction_per_trade', 0.001),
+      getConfigNumber('optimizer_max_cluster_pct', 45),
+    ]);
+    const optConfig: OptimizerRuntimeConfig = {
+      cashFloorPct: cashFloor, maxPositionPct: maxPos, maxCryptoPct: maxCrypto,
+      maxDailyChanges: maxChanges, baseReturnScale: baseReturn, defaultCorrelation: defCorr,
+      correlationShrinkage: corrShrink, minTradePct: minTrade, frictionPerTrade: friction,
+      maxClusterPct: maxCluster,
+    };
+
+    const result = runOptimizerCore(pricedScores, userParams, [], covData, calibration, optConfig);
 
     // 5. Fetch asset names to enrich response
     const { data: assetData } = await supabase.from('assets').select('ticker, name');
