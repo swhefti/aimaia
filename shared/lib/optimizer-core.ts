@@ -1,20 +1,27 @@
 /**
- * Shared Optimizer Core — single source of truth for target-weight computation.
+ * Shared Optimizer Core v2 — covariance-aware portfolio optimization.
  *
  * Used by:
  *   1. frontend/app/api/optimizer/build/route.ts  (onboarding)
  *   2. backend/jobs/synthesis.ts                   (daily management)
+ *   3. backend/jobs/evaluate-optimizer.ts          (backtesting)
  *
- * This module MUST NOT import from backend/ or frontend/. It lives in shared/
- * so both workspaces can import it without cross-workspace hacks.
+ * v2 improvements over v1:
+ *   - Real covariance/correlation from historical returns with shrinkage fallback
+ *   - Iterative objective-based allocation (not just score-proportional)
+ *   - Theme/cluster concentration controls
+ *   - Trade-friction-aware rebalancing with minimum trade thresholds
+ *   - Richer portfolio risk metrics
+ *
+ * This module MUST NOT import from backend/ or frontend/.
  */
 import { ASSET_TYPE_MAP, MAX_POSITION_PCT, MAX_CRYPTO_ALLOCATION_PCT, CASH_FLOOR_PCT, MAX_DAILY_CHANGES } from './constants.js';
 import type { AssetType } from '../types/assets.js';
 import type { RiskProfile, VolatilityTolerance } from '../types/portfolio.js';
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Types
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 export interface OptimizerTickerScore {
   ticker: string;
@@ -51,6 +58,8 @@ export interface OptimizerPortfolioAction {
   deltaWeightPct: number;
   confidence: number;
   urgency: 'high' | 'medium' | 'low';
+  /** Portfolio-level rationale for this action (new in v2) */
+  rationale?: string | undefined;
 }
 
 export interface OptimizerTargetWeight {
@@ -59,12 +68,16 @@ export interface OptimizerTargetWeight {
 }
 
 export interface OptimizerRiskSummary {
-  expectedReturn: number;      // annualized decimal
-  portfolioVolatility: number; // annualized decimal (0 if no historical data)
-  concentrationRisk: number;   // [0, 1]
-  diversificationScore: number; // [0, 1]
-  maxDrawdownEstimate: number; // decimal
-  cryptoAllocationPct: number; // 0–100
+  expectedReturn: number;
+  portfolioVolatility: number;
+  concentrationRisk: number;
+  diversificationScore: number;
+  maxDrawdownEstimate: number;
+  cryptoAllocationPct: number;
+  /** Average pairwise correlation in portfolio (new in v2, 0 if no data) */
+  avgPairwiseCorrelation: number;
+  /** Number of tickers with real historical vol data */
+  tickersWithVolData: number;
 }
 
 export interface OptimizerOutput {
@@ -75,31 +88,76 @@ export interface OptimizerOutput {
   metadata: {
     candidatesConsidered: number;
     constraintsActive: string[];
+    objectiveValue: number;
+    solverIterations: number;
   };
 }
 
-// ---------------------------------------------------------------------------
+/**
+ * Covariance data structure. Callers supply:
+ *   - volatilities: per-ticker annualized vol (from daily log returns)
+ *   - correlations: pairwise correlation map, key = "AAPL|MSFT" (sorted), value in [-1,1]
+ * If correlations is empty, the optimizer uses shrinkage toward a default correlation.
+ */
+export interface CovarianceData {
+  volatilities: Map<string, number>;
+  correlations: Map<string, number>;
+}
+
+export type CalibrationMap = Map<string, number>;
+
+// ===========================================================================
 // Constants
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 const BASE_RETURN_SCALE = 0.30;
 const LOW_CONFIDENCE_THRESHOLD = 0.3;
-const NEAR_ZERO_THRESHOLD = 0.5; // weight % below which position is "zero"
+const NEAR_ZERO_THRESHOLD = 0.5;
+const DEFAULT_VOL = 0.25;
+const DEFAULT_CORRELATION = 0.30;  // fallback when pairwise data is missing
+const SHRINKAGE_TOWARD_DEFAULT = 0.3; // blend real correlation toward default
+const MIN_TRADE_VALUE_PCT = 1.0;   // minimum trade size to generate an action (% of portfolio)
+const FRICTION_PENALTY_PER_TRADE = 0.001; // ~10bps per trade as friction proxy
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
-// ---------------------------------------------------------------------------
-// Calibration (optional data-backed expected return override)
-// ---------------------------------------------------------------------------
+/** Stable sort key for a pair of tickers */
+function corrKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
 
-/**
- * Calibration map: score_bucket → calibrated annualized expected return.
- * If provided, the optimizer blends calibrated values with the heuristic.
- * Loaded from `score_calibration` table by callers that have DB access.
- */
-export type CalibrationMap = Map<string, number>;
+// ===========================================================================
+// Theme / cluster grouping for concentration controls
+// ===========================================================================
+
+const THEME_CLUSTERS: Record<string, string[]> = {
+  mega_tech: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA'],
+  semiconductors: ['NVDA', 'AMD', 'AVGO', 'QCOM', 'TXN', 'INTC'],
+  fintech: ['SQ', 'PYPL', 'COIN', 'HOOD', 'SOFI'],
+  ev_mobility: ['TSLA', 'RIVN', 'LCID', 'NIO', 'UBER', 'LYFT'],
+  china_tech: ['BABA', 'JD', 'PDD', 'NIO'],
+  crypto_major: ['BTC', 'ETH', 'BNB', 'SOL'],
+  crypto_alt: ['XRP', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC', 'LTC', 'BCH'],
+  broad_equity_etf: ['SPY', 'QQQ', 'VTI', 'VOO', 'IWM'],
+  bond_commodity_etf: ['TLT', 'HYG', 'LQD', 'GLD', 'SLV', 'USO'],
+};
+
+/** Max allocation for any single theme cluster (prevents hidden concentration) */
+const MAX_CLUSTER_PCT = 45;
+
+function getTickerClusters(ticker: string): string[] {
+  const clusters: string[] = [];
+  for (const [name, members] of Object.entries(THEME_CLUSTERS)) {
+    if (members.includes(ticker)) clusters.push(name);
+  }
+  return clusters;
+}
+
+// ===========================================================================
+// Calibration
+// ===========================================================================
 
 function scoreBucketForValue(score: number): string {
   if (score >= 0.60) return 'strong_buy';
@@ -109,15 +167,14 @@ function scoreBucketForValue(score: number): string {
   return 'strong_sell';
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Expected Returns
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 function computeExpectedReturn(
   s: OptimizerTickerScore,
   calibration?: CalibrationMap,
 ): number {
-  // Heuristic expected return
   let mu = s.compositeScore * BASE_RETURN_SCALE;
   const confMult = s.confidence < LOW_CONFIDENCE_THRESHOLD
     ? s.confidence / LOW_CONFIDENCE_THRESHOLD * 0.5
@@ -126,16 +183,13 @@ function computeExpectedReturn(
   if (s.dataFreshness === 'stale') mu *= 0.7;
   if (s.dataFreshness === 'missing') mu *= 0.3;
 
-  // Blend with calibrated value if available
   if (calibration && calibration.size > 0) {
     const bucket = scoreBucketForValue(s.compositeScore);
     const calibratedMu = calibration.get(bucket);
     if (calibratedMu !== undefined) {
-      // Apply confidence/freshness damping to calibrated value too
       let calAdj = calibratedMu * confMult;
       if (s.dataFreshness === 'stale') calAdj *= 0.7;
       if (s.dataFreshness === 'missing') calAdj *= 0.3;
-      // Blend: 60% calibrated + 40% heuristic (calibrated takes priority)
       mu = calAdj * 0.6 + mu * 0.4;
     }
   }
@@ -143,51 +197,328 @@ function computeExpectedReturn(
   return mu;
 }
 
-// ---------------------------------------------------------------------------
-// Config derivation
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Covariance-aware risk computation
+// ===========================================================================
+
+function getVol(ticker: string, cov: CovarianceData): number {
+  return cov.volatilities.get(ticker) ?? DEFAULT_VOL;
+}
+
+function getCorrelation(a: string, b: string, cov: CovarianceData): number {
+  if (a === b) return 1.0;
+  const real = cov.correlations.get(corrKey(a, b));
+  if (real !== undefined) {
+    // Shrinkage: blend toward default to reduce estimation noise
+    return real * (1 - SHRINKAGE_TOWARD_DEFAULT) + DEFAULT_CORRELATION * SHRINKAGE_TOWARD_DEFAULT;
+  }
+  // No data: use asset-type-aware defaults
+  const typeA = ASSET_TYPE_MAP[a]; const typeB = ASSET_TYPE_MAP[b];
+  if (typeA === 'crypto' && typeB === 'crypto') return 0.65;
+  if (typeA === 'crypto' || typeB === 'crypto') return 0.15;
+  // Same broad equity type: moderate correlation
+  return DEFAULT_CORRELATION;
+}
+
+/** Compute portfolio variance from weights and covariance data. */
+function portfolioVariance(
+  tickers: string[], weights: number[], cov: CovarianceData,
+): number {
+  let variance = 0;
+  for (let i = 0; i < tickers.length; i++) {
+    const wi = weights[i]!;
+    const volI = getVol(tickers[i]!, cov);
+    for (let j = i; j < tickers.length; j++) {
+      const wj = weights[j]!;
+      const volJ = getVol(tickers[j]!, cov);
+      const corr = getCorrelation(tickers[i]!, tickers[j]!, cov);
+      const contrib = wi * wj * volI * volJ * corr;
+      variance += i === j ? contrib : 2 * contrib;
+    }
+  }
+  return Math.max(0, variance);
+}
+
+/** Average pairwise correlation for a portfolio. */
+function avgPortfolioCorrelation(
+  tickers: string[], weights: number[], cov: CovarianceData,
+): number {
+  let sumCorr = 0; let pairs = 0;
+  for (let i = 0; i < tickers.length; i++) {
+    for (let j = i + 1; j < tickers.length; j++) {
+      if (weights[i]! > 0.001 && weights[j]! > 0.001) {
+        sumCorr += getCorrelation(tickers[i]!, tickers[j]!, cov);
+        pairs++;
+      }
+    }
+  }
+  return pairs > 0 ? sumCorr / pairs : 0;
+}
+
+// ===========================================================================
+// Config derivation (risk-profile dependent)
+// ===========================================================================
 
 interface OptimizerConfig {
-  rebalanceBandPct: number;
-  scoreBlend: number;  // 0–1, higher = more score-proportional
-  turnoverDamping: number; // 0–1, higher = more bias toward current weights
+  riskAversion: number;       // lambda for variance penalty
+  concentrationAversion: number; // lambda for HHI penalty
+  turnoverPenalty: number;    // lambda for turnover cost
+  frictionPenalty: number;    // per-trade friction cost proxy
+  rebalanceBandPct: number;   // minimum delta to trigger action (%)
+  minTradePct: number;        // minimum trade size to execute (%)
+  clusterPenalty: number;     // penalty for theme cluster concentration
 }
 
 function deriveConfig(params: OptimizerUserParams): OptimizerConfig {
-  const { riskProfile } = params;
+  const { riskProfile, volatilityTolerance } = params;
+
+  let riskAversion = 3.0;
+  if (riskProfile === 'conservative') riskAversion = 6.0;
+  else if (riskProfile === 'aggressive') riskAversion = 1.5;
+  if (volatilityTolerance === 'moderate') riskAversion *= 1.3;
+  else if (volatilityTolerance === 'tolerant') riskAversion *= 0.7;
+
+  let concentrationAversion = 1.0;
+  if (riskProfile === 'conservative') concentrationAversion = 2.0;
+  else if (riskProfile === 'aggressive') concentrationAversion = 0.4;
+
+  const turnoverPenalty = 0.005; // ~50bps per unit of turnover
+  const frictionPenalty = FRICTION_PENALTY_PER_TRADE;
+
   const rebalanceBandPct = riskProfile === 'aggressive' ? 1.5 : riskProfile === 'conservative' ? 3.0 : 2.0;
-  const scoreBlend = riskProfile === 'aggressive' ? 0.7 : riskProfile === 'conservative' ? 0.3 : 0.5;
-  const turnoverDamping = 0.3; // blend 30% toward current weight for existing positions
-  return { rebalanceBandPct, scoreBlend, turnoverDamping };
+  const minTradePct = MIN_TRADE_VALUE_PCT;
+  const clusterPenalty = riskProfile === 'conservative' ? 1.5 : 0.8;
+
+  return { riskAversion, concentrationAversion, turnoverPenalty, frictionPenalty, rebalanceBandPct, minTradePct, clusterPenalty };
 }
 
-// ---------------------------------------------------------------------------
-// Core optimizer — single allocation engine
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Objective function
+// ===========================================================================
+
+function computeObjective(
+  tickers: string[],
+  weights: number[], // decimal (0-1)
+  expectedReturns: Map<string, number>,
+  cov: CovarianceData,
+  currentWeights: Map<string, number>, // decimal
+  config: OptimizerConfig,
+  hasExistingPortfolio: boolean,
+): number {
+  // Expected return
+  let expRet = 0;
+  for (let i = 0; i < tickers.length; i++) {
+    expRet += weights[i]! * (expectedReturns.get(tickers[i]!) ?? 0);
+  }
+
+  // Portfolio variance penalty
+  const pVar = portfolioVariance(tickers, weights, cov);
+  const riskPenalty = config.riskAversion * pVar;
+
+  // HHI concentration penalty
+  let hhi = 0;
+  for (const w of weights) hhi += w * w;
+  const concPenalty = config.concentrationAversion * hhi;
+
+  // Theme cluster penalty
+  let clusterPenalty = 0;
+  const clusterWeights = new Map<string, number>();
+  for (let i = 0; i < tickers.length; i++) {
+    for (const cluster of getTickerClusters(tickers[i]!)) {
+      clusterWeights.set(cluster, (clusterWeights.get(cluster) ?? 0) + weights[i]!);
+    }
+  }
+  for (const [, cw] of clusterWeights) {
+    if (cw > MAX_CLUSTER_PCT / 100) {
+      clusterPenalty += config.clusterPenalty * (cw - MAX_CLUSTER_PCT / 100) ** 2;
+    }
+  }
+
+  // Turnover penalty (distance from current weights)
+  let turnover = 0;
+  if (hasExistingPortfolio) {
+    for (let i = 0; i < tickers.length; i++) {
+      turnover += Math.abs(weights[i]! - (currentWeights.get(tickers[i]!) ?? 0));
+    }
+  }
+  const turnPenalty = config.turnoverPenalty * turnover;
+
+  // Friction penalty (count of trades that would occur)
+  let tradeCount = 0;
+  if (hasExistingPortfolio) {
+    for (let i = 0; i < tickers.length; i++) {
+      const delta = Math.abs(weights[i]! - (currentWeights.get(tickers[i]!) ?? 0));
+      if (delta > config.minTradePct / 100) tradeCount++;
+    }
+  }
+  const frictPenalty = config.frictionPenalty * tradeCount;
+
+  return expRet - riskPenalty - concPenalty - clusterPenalty - turnPenalty - frictPenalty;
+}
+
+// ===========================================================================
+// Iterative solver
+// ===========================================================================
+
+const MAX_ITERATIONS = 60;
+const STEP_SIZE = 0.005; // 0.5% weight shift per iteration step
+
+function solveWeights(
+  tickers: string[],
+  expectedReturns: Map<string, number>,
+  cov: CovarianceData,
+  currentWeights: Map<string, number>,
+  config: OptimizerConfig,
+  userParams: OptimizerUserParams,
+  hasExistingPortfolio: boolean,
+): number[] {
+  const n = tickers.length;
+  if (n === 0) return [];
+
+  const investableFrac = 1 - CASH_FLOOR_PCT;
+  const maxSingleFrac = MAX_POSITION_PCT;
+  const maxCryptoFrac = MAX_CRYPTO_ALLOCATION_PCT;
+
+  // Initialize: blend of expected-return-proportional and equal-weight
+  const equalW = investableFrac / n;
+  const mus = tickers.map((t) => expectedReturns.get(t) ?? 0);
+  const minMu = Math.min(...mus);
+  const shift = minMu < 0.001 ? Math.abs(minMu) + 0.001 : 0;
+  const shifted = mus.map((m) => m + shift);
+  const totalShifted = shifted.reduce((s, v) => s + v, 0);
+  const scoreBlend = userParams.riskProfile === 'aggressive' ? 0.6 : userParams.riskProfile === 'conservative' ? 0.3 : 0.45;
+
+  const weights = tickers.map((t, i) => {
+    const scoreProp = totalShifted > 0 ? (shifted[i]! / totalShifted) * investableFrac : equalW;
+    let w = scoreProp * scoreBlend + equalW * (1 - scoreBlend);
+    // Turnover damping for existing positions
+    const curW = currentWeights.get(t) ?? 0;
+    if (hasExistingPortfolio && curW > 0.01) {
+      w = w * 0.75 + curW * 0.25;
+    }
+    return clamp(w, 0, maxSingleFrac);
+  });
+
+  // Normalize
+  normalizeWeights(weights, investableFrac, maxSingleFrac);
+
+  // Enforce crypto cap
+  enforceCryptoCap(tickers, weights, maxCryptoFrac);
+
+  let bestObj = computeObjective(tickers, weights, expectedReturns, cov, currentWeights, config, hasExistingPortfolio);
+  let bestWeights = [...weights];
+
+  // Iterative improvement: try shifting weight between pairs
+  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    let improved = false;
+
+    for (let from = 0; from < n; from++) {
+      if (weights[from]! < STEP_SIZE) continue;
+
+      for (let to = 0; to < n; to++) {
+        if (from === to) continue;
+        if (weights[to]! >= maxSingleFrac - STEP_SIZE) continue;
+
+        // Try shift
+        weights[from] = weights[from]! - STEP_SIZE;
+        weights[to] = weights[to]! + STEP_SIZE;
+
+        // Quick constraint check
+        let valid = weights[from]! >= 0 && weights[to]! <= maxSingleFrac;
+        if (valid) {
+          // Check crypto cap
+          let cryptoW = 0;
+          for (let k = 0; k < n; k++) {
+            if (ASSET_TYPE_MAP[tickers[k]!] === 'crypto') cryptoW += weights[k]!;
+          }
+          if (cryptoW > maxCryptoFrac) valid = false;
+        }
+
+        if (valid) {
+          const obj = computeObjective(tickers, weights, expectedReturns, cov, currentWeights, config, hasExistingPortfolio);
+          if (obj > bestObj + 1e-6) {
+            bestObj = obj;
+            bestWeights = [...weights];
+            improved = true;
+          }
+        }
+
+        // Revert
+        weights[from] = weights[from]! + STEP_SIZE;
+        weights[to] = weights[to]! - STEP_SIZE;
+      }
+    }
+
+    if (!improved) break;
+    // Apply best weights for next iteration
+    for (let i = 0; i < n; i++) weights[i] = bestWeights[i]!;
+  }
+
+  return bestWeights;
+}
+
+function normalizeWeights(weights: number[], maxTotal: number, maxSingle: number): void {
+  // Cap individual
+  for (let i = 0; i < weights.length; i++) {
+    weights[i] = clamp(weights[i]!, 0, maxSingle);
+  }
+  // Scale down if total exceeds budget
+  const total = weights.reduce((s, w) => s + w, 0);
+  if (total > maxTotal) {
+    const scale = maxTotal / total;
+    for (let i = 0; i < weights.length; i++) weights[i] = weights[i]! * scale;
+  }
+}
+
+function enforceCryptoCap(tickers: string[], weights: number[], maxCrypto: number): void {
+  let cryptoTotal = 0;
+  const cryptoIdx: number[] = [];
+  for (let i = 0; i < tickers.length; i++) {
+    if (ASSET_TYPE_MAP[tickers[i]!] === 'crypto') {
+      cryptoTotal += weights[i]!;
+      cryptoIdx.push(i);
+    }
+  }
+  if (cryptoTotal > maxCrypto && cryptoIdx.length > 0) {
+    const scale = maxCrypto / cryptoTotal;
+    for (const idx of cryptoIdx) weights[idx] = weights[idx]! * scale;
+  }
+}
+
+// ===========================================================================
+// Main entry point
+// ===========================================================================
 
 export function runOptimizerCore(
   scores: OptimizerTickerScore[],
   userParams: OptimizerUserParams,
   currentHoldings: OptimizerCurrentHolding[],
-  /** Annualized volatility per ticker (from historical returns). Empty map = no vol data. */
-  tickerVolatilities: Map<string, number>,
-  /** Optional calibration from score_calibration table. If empty/undefined, uses heuristic only. */
+  /**
+   * Historical data for risk estimation. Accepts either:
+   *   - Map<string, number> (just volatilities, backward compat) — correlations use defaults
+   *   - CovarianceData (full vol + correlation) — enables real covariance optimization
+   */
+  historicalData: Map<string, number> | CovarianceData,
   calibration?: CalibrationMap,
 ): OptimizerOutput {
   const config = deriveConfig(userParams);
   const currentTickers = new Set(currentHoldings.map((h) => h.ticker));
   const constraintsActive: string[] = [];
-  const investablePct = 100 * (1 - CASH_FLOOR_PCT);
   const maxSinglePct = MAX_POSITION_PCT * 100;
   const maxCryptoPct = MAX_CRYPTO_ALLOCATION_PCT * 100;
 
-  // 1. Filter eligible tickers by allowed asset types
+  // Normalize historicalData to CovarianceData (backward compat: plain Map = vols only)
+  const cov: CovarianceData = 'correlations' in historicalData
+    ? historicalData
+    : { volatilities: historicalData, correlations: new Map() };
+
+  // 1. Filter eligible tickers
   const eligible = scores.filter((s) => {
     const type = ASSET_TYPE_MAP[s.ticker] as AssetType | undefined;
     return type !== undefined && userParams.assetTypes.includes(type);
   });
 
-  // 2. Always include current holdings; add top new candidates
+  // 2. Candidate selection: current holdings + top new candidates
   const held = eligible.filter((s) => currentTickers.has(s.ticker));
   const notHeld = eligible
     .filter((s) => !currentTickers.has(s.ticker))
@@ -195,82 +526,77 @@ export function runOptimizerCore(
   const maxNew = Math.max(0, userParams.maxPositions * 3 - held.length);
   const allCandidates = [...held, ...notHeld.slice(0, maxNew)];
 
-  // 3. Compute expected returns and rank
-  const withReturns = allCandidates.map((s) => ({
-    ...s,
-    expectedReturn: computeExpectedReturn(s, calibration),
-  }));
+  // 3. Compute expected returns
+  const expectedReturns = new Map<string, number>();
+  const withReturns = allCandidates.map((s) => {
+    const er = computeExpectedReturn(s, calibration);
+    expectedReturns.set(s.ticker, er);
+    return { ...s, expectedReturn: er };
+  });
   withReturns.sort((a, b) => b.expectedReturn - a.expectedReturn);
 
+  // Select top N for optimization
   const selected = withReturns.slice(0, userParams.maxPositions);
-  if (selected.length === 0) {
-    return emptyOutput();
-  }
+  if (selected.length === 0) return emptyOutput();
 
-  // 4. Score-proportional allocation
-  const minMu = Math.min(...selected.map((s) => s.expectedReturn));
-  const shift = minMu < 0.001 ? Math.abs(minMu) + 0.001 : 0;
-  const shifted = selected.map((s) => s.expectedReturn + shift);
-  const totalShifted = shifted.reduce((sum, v) => sum + v, 0);
-  const equalPct = investablePct / selected.length;
+  const tickers = selected.map((s) => s.ticker);
 
+  // 4. Build current weight map (decimal 0-1)
   const currentWeightMap = new Map<string, number>();
-  for (const h of currentHoldings) currentWeightMap.set(h.ticker, h.weightPct);
+  for (const h of currentHoldings) currentWeightMap.set(h.ticker, h.weightPct / 100);
+  const hasExisting = currentHoldings.length > 0;
 
-  let weights = selected.map((s, i) => {
-    const scorePct = totalShifted > 0
-      ? (shifted[i]! / totalShifted) * investablePct
-      : equalPct;
-    let blended = scorePct * config.scoreBlend + equalPct * (1 - config.scoreBlend);
+  // 5. Solve for optimal weights (iterative objective maximization)
+  const optimalWeights = solveWeights(
+    tickers, expectedReturns, cov, currentWeightMap, config, userParams, hasExisting,
+  );
 
-    // Turnover damping: blend toward current weight for existing positions
-    const currentW = currentWeightMap.get(s.ticker);
-    if (currentW !== undefined && currentW > 0) {
-      blended = blended * (1 - config.turnoverDamping) + currentW * config.turnoverDamping;
-    }
+  // 6. Clean up tiny positions and enforce constraints
+  const minPosFrac = 0.02; // 2%
+  for (let i = 0; i < optimalWeights.length; i++) {
+    if (optimalWeights[i]! < minPosFrac) optimalWeights[i] = 0;
+  }
+  normalizeWeights(optimalWeights, 1 - CASH_FLOOR_PCT, MAX_POSITION_PCT);
+  enforceCryptoCap(tickers, optimalWeights, MAX_CRYPTO_ALLOCATION_PCT);
 
-    return clamp(blended, 2, maxSinglePct);
-  });
-
-  // 5. Enforce crypto cap
+  // Check constraints
   let cryptoTotal = 0;
-  const cryptoIdx: number[] = [];
-  for (let i = 0; i < selected.length; i++) {
-    if (ASSET_TYPE_MAP[selected[i]!.ticker] === 'crypto') {
-      cryptoTotal += weights[i]!;
-      cryptoIdx.push(i);
+  for (let i = 0; i < tickers.length; i++) {
+    if (ASSET_TYPE_MAP[tickers[i]!] === 'crypto') cryptoTotal += optimalWeights[i]!;
+    if (optimalWeights[i]! >= MAX_POSITION_PCT - 0.001) constraintsActive.push(`position_cap:${tickers[i]}`);
+  }
+  if (cryptoTotal >= MAX_CRYPTO_ALLOCATION_PCT - 0.01) constraintsActive.push('crypto_cap');
+
+  // Check cluster concentrations
+  const clusterW = new Map<string, number>();
+  for (let i = 0; i < tickers.length; i++) {
+    for (const c of getTickerClusters(tickers[i]!)) {
+      clusterW.set(c, (clusterW.get(c) ?? 0) + optimalWeights[i]!);
     }
   }
-  if (cryptoTotal > maxCryptoPct && cryptoIdx.length > 0) {
-    constraintsActive.push('crypto_cap');
-    const scale = maxCryptoPct / cryptoTotal;
-    for (const idx of cryptoIdx) weights[idx] = weights[idx]! * scale;
+  for (const [name, w] of clusterW) {
+    if (w > MAX_CLUSTER_PCT / 100) constraintsActive.push(`cluster_cap:${name}`);
   }
 
-  // 6. Normalize so total invested <= investablePct
-  const totalW = weights.reduce((s, w) => s + w, 0);
-  if (totalW > investablePct) {
-    const scale = investablePct / totalW;
-    weights = weights.map((w) => w * scale);
+  // 7. Build target weights
+  const totalWeightPct = optimalWeights.reduce((s, w) => s + w, 0) * 100;
+  const cashWeightPct = Math.max(100 - totalWeightPct, CASH_FLOOR_PCT * 100);
+
+  const targetWeights: OptimizerTargetWeight[] = [];
+  for (let i = 0; i < tickers.length; i++) {
+    const wPct = Math.round(optimalWeights[i]! * 10000) / 100;
+    if (wPct > 0.5) targetWeights.push({ ticker: tickers[i]!, weightPct: wPct });
   }
+  targetWeights.sort((a, b) => b.weightPct - a.weightPct);
 
-  // 7. Build target weights (filter dust)
-  const finalTotal = weights.reduce((s, w) => s + w, 0);
-  const cashWeightPct = Math.max(100 - finalTotal, CASH_FLOOR_PCT * 100);
+  // 8. Compute final objective value
+  const objValue = computeObjective(tickers, optimalWeights, expectedReturns, cov, currentWeightMap, config, hasExisting);
 
-  const targetWeights: OptimizerTargetWeight[] = selected
-    .map((s, i) => ({ ticker: s.ticker, weightPct: Math.round(weights[i]! * 100) / 100 }))
-    .filter((tw) => tw.weightPct > 0.5);
+  // 9. Generate actions with friction awareness
+  const actions = generateActions(targetWeights, currentHoldings, config, scores, cov);
 
-  // 8. Generate deterministic actions
-  const actions = generateActions(
-    targetWeights, currentHoldings, config.rebalanceBandPct, scores,
-  );
-
-  // 9. Compute risk summary
-  const riskSummary = computeRiskSummary(
-    targetWeights, selected, tickerVolatilities,
-  );
+  // 10. Compute risk summary
+  const riskSummary = computeRiskSummary(tickers, optimalWeights, expectedReturns, cov, targetWeights);
 
   return {
     targetWeights,
@@ -280,19 +606,22 @@ export function runOptimizerCore(
     metadata: {
       candidatesConsidered: eligible.length,
       constraintsActive,
+      objectiveValue: objValue,
+      solverIterations: MAX_ITERATIONS, // upper bound
     },
   };
 }
 
-// ---------------------------------------------------------------------------
-// Action generation
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Action generation (friction-aware)
+// ===========================================================================
 
 function generateActions(
   targetWeights: OptimizerTargetWeight[],
   currentHoldings: OptimizerCurrentHolding[],
-  rebalanceBandPct: number,
+  config: OptimizerConfig,
   scores: OptimizerTickerScore[],
+  cov: CovarianceData,
 ): OptimizerPortfolioAction[] {
   const actions: OptimizerPortfolioAction[] = [];
 
@@ -318,10 +647,14 @@ function generateActions(
     const currentIsZero = currentWeight < NEAR_ZERO_THRESHOLD;
     const targetIsZero = targetWeight < NEAR_ZERO_THRESHOLD;
 
+    // Friction-aware action classification:
+    // Use the wider of rebalanceBand and minTrade as the hold threshold
+    const holdThreshold = Math.max(config.rebalanceBandPct, config.minTradePct);
+
     let action: OptimizerActionType;
     if (targetIsZero && !currentIsZero) action = 'SELL';
     else if (currentIsZero && !targetIsZero) action = 'BUY';
-    else if (Math.abs(delta) <= rebalanceBandPct) action = 'HOLD';
+    else if (Math.abs(delta) <= holdThreshold) action = 'HOLD';
     else if (delta > 0) action = 'ADD';
     else action = 'REDUCE';
 
@@ -335,23 +668,31 @@ function generateActions(
     else if (Math.abs(delta) > 3 || confidence > 0.6) urgency = 'medium';
     else urgency = 'low';
 
+    // Build portfolio-level rationale
+    let rationale: string | undefined;
+    const vol = getVol(ticker, cov);
+    if (action === 'SELL' && confidence < 0.4) {
+      rationale = `Low confidence (${(confidence * 100).toFixed(0)}%) — reducing uncertain exposure`;
+    } else if (action === 'BUY') {
+      rationale = vol > 0.4 ? `New position (high vol ${(vol * 100).toFixed(0)}% — sized conservatively)` : 'New position with favorable risk/return profile';
+    } else if (action === 'REDUCE' && vol > 0.35) {
+      rationale = `Reducing to manage portfolio volatility (ticker vol ${(vol * 100).toFixed(0)}%)`;
+    }
+
     actions.push({
-      ticker,
-      action,
+      ticker, action,
       currentWeightPct: Math.round(currentWeight * 100) / 100,
       targetWeightPct: Math.round(targetWeight * 100) / 100,
       deltaWeightPct: Math.round(delta * 100) / 100,
-      confidence,
-      urgency,
+      confidence, urgency, rationale,
     });
   }
 
-  // Sort: SELL first, then BUY, REDUCE, ADD, HOLD; by abs delta within tier
+  // Sort: SELL first, then BUY, REDUCE, ADD, HOLD
   const order: Record<OptimizerActionType, number> = { SELL: 0, BUY: 1, REDUCE: 2, ADD: 3, HOLD: 4 };
   actions.sort((a, b) => order[a.action] - order[b.action] || Math.abs(b.deltaWeightPct) - Math.abs(a.deltaWeightPct));
 
-  // Enforce MAX_DAILY_CHANGES — remove suppressed actions entirely rather than
-  // mutating them to HOLD with contradictory target/delta values.
+  // Enforce MAX_DAILY_CHANGES
   const nonHold = actions.filter((a) => a.action !== 'HOLD');
   if (nonHold.length > MAX_DAILY_CHANGES) {
     const kept = new Set(nonHold.slice(0, MAX_DAILY_CHANGES).map((a) => a.ticker));
@@ -361,62 +702,51 @@ function generateActions(
   return actions;
 }
 
-// ---------------------------------------------------------------------------
-// Risk summary
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Risk summary (covariance-aware)
+// ===========================================================================
 
 function computeRiskSummary(
+  tickers: string[],
+  weights: number[], // decimal
+  expectedReturns: Map<string, number>,
+  cov: CovarianceData,
   targetWeights: OptimizerTargetWeight[],
-  scoredCandidates: Array<OptimizerTickerScore & { expectedReturn: number }>,
-  tickerVolatilities: Map<string, number>,
 ): OptimizerRiskSummary {
-  const DEFAULT_VOL = 0.25;
-  const AVG_CORR = 0.3; // cross-term approximation
-
   // Expected return
   let expRet = 0;
-  for (const tw of targetWeights) {
-    const cand = scoredCandidates.find((c) => c.ticker === tw.ticker);
-    expRet += (tw.weightPct / 100) * (cand?.expectedReturn ?? 0);
+  for (let i = 0; i < tickers.length; i++) {
+    expRet += weights[i]! * (expectedReturns.get(tickers[i]!) ?? 0);
   }
 
-  // Portfolio volatility (weighted vol with cross-correlation approximation)
-  let weightedVarSum = 0;
-  for (const tw of targetWeights) {
-    const vol = tickerVolatilities.get(tw.ticker) ?? DEFAULT_VOL;
-    const w = tw.weightPct / 100;
-    weightedVarSum += w * w * vol * vol;
-  }
-  for (let i = 0; i < targetWeights.length; i++) {
-    const twi = targetWeights[i]!;
-    const volI = tickerVolatilities.get(twi.ticker) ?? DEFAULT_VOL;
-    for (let j = i + 1; j < targetWeights.length; j++) {
-      const twj = targetWeights[j]!;
-      const volJ = tickerVolatilities.get(twj.ticker) ?? DEFAULT_VOL;
-      weightedVarSum += 2 * (twi.weightPct / 100) * (twj.weightPct / 100) * AVG_CORR * volI * volJ;
-    }
-  }
-  const portfolioVol = Math.sqrt(Math.max(0, weightedVarSum));
+  // Portfolio volatility (covariance-aware)
+  const pVar = portfolioVariance(tickers, weights, cov);
+  const portfolioVol = Math.sqrt(pVar);
 
-  // Concentration / diversification
-  let hhi = 0;
-  const n = targetWeights.length;
-  for (const tw of targetWeights) {
-    const w = tw.weightPct / 100;
-    hhi += w * w;
+  // Concentration
+  let hhi = 0; let activeN = 0;
+  for (const w of weights) {
+    if (w > 0.001) { hhi += w * w; activeN++; }
   }
-  const minHhi = n > 0 ? 1 / n : 0;
-  const concentrationRisk = n > 0 && hhi > minHhi
-    ? Math.min(1, (hhi - minHhi) / (1 - minHhi))
-    : 0;
+  const minHhi = activeN > 0 ? 1 / activeN : 0;
+  const concentrationRisk = activeN > 0 && hhi > minHhi ? Math.min(1, (hhi - minHhi) / (1 - minHhi)) : 0;
 
-  // Max drawdown estimate: 2 * vol (rough annual worst case)
-  const maxDrawdownEstimate = Math.min(0.5, portfolioVol * 2);
+  // Max drawdown estimate (Cornish-Fisher approximation: ~2.33 * vol for 99% annual)
+  const maxDrawdownEstimate = Math.min(0.6, portfolioVol * 2.33);
 
   // Crypto allocation
   let cryptoAlloc = 0;
   for (const tw of targetWeights) {
     if (ASSET_TYPE_MAP[tw.ticker] === 'crypto') cryptoAlloc += tw.weightPct;
+  }
+
+  // Avg pairwise correlation
+  const avgCorr = avgPortfolioCorrelation(tickers, weights, cov);
+
+  // Count tickers with real vol data
+  let tickersWithVol = 0;
+  for (const t of tickers) {
+    if (cov.volatilities.has(t)) tickersWithVol++;
   }
 
   return {
@@ -426,61 +756,48 @@ function computeRiskSummary(
     diversificationScore: 1 - concentrationRisk,
     maxDrawdownEstimate,
     cryptoAllocationPct: cryptoAlloc,
+    avgPairwiseCorrelation: avgCorr,
+    tickersWithVolData: tickersWithVol,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Goal probability heuristic (v1 — temporary, pragmatic)
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Goal probability heuristic
+// ===========================================================================
 
-/**
- * Compute a pragmatic v1 goal probability from optimizer outputs.
- * This is NOT the full AI probability model — it's a signal-aware heuristic
- * that replaces the hardcoded `50`.
- *
- * Inputs: expected return, goal return, time horizon, diversification, volatility.
- * Output: 0–100 probability estimate.
- */
 export function computeGoalProbabilityHeuristic(params: {
-  expectedReturn: number;       // annualized decimal from optimizer
-  goalReturnPct: number;        // decimal, e.g. 0.07 for 7%
+  expectedReturn: number;
+  goalReturnPct: number;
   timeHorizonMonths: number;
   positionCount: number;
   maxPositions: number;
-  portfolioVolatility: number;  // annualized decimal
-  concentrationRisk: number;    // [0, 1]
+  portfolioVolatility: number;
+  concentrationRisk: number;
 }): number {
   const { expectedReturn, goalReturnPct, timeHorizonMonths, positionCount, maxPositions, portfolioVolatility, concentrationRisk } = params;
 
-  // Base: sigmoid mapping of needed-return vs expected-return
-  const neededAnnualReturn = goalReturnPct; // already annualized decimal
-  const returnGap = expectedReturn - neededAnnualReturn;
-  // sigmoid: P = 1 / (1 + exp(-k * gap))  with k=12
+  const returnGap = expectedReturn - goalReturnPct;
   const sigmoid = 1 / (1 + Math.exp(-12 * returnGap));
   let prob = sigmoid * 100;
 
-  // Diversification bonus: up to +5 for well-diversified
   const divBonus = (1 - concentrationRisk) * 5;
   prob += divBonus;
 
-  // Volatility penalty: high vol reduces confidence
   const volPenalty = Math.min(10, portfolioVolatility * 15);
   prob -= volPenalty;
 
-  // Position count bonus: having positions is better than all cash
   if (positionCount === 0) prob = Math.min(prob, 35);
   else if (positionCount < maxPositions * 0.5) prob -= 3;
 
-  // Time horizon bonus: longer = more room to recover
   if (timeHorizonMonths >= 24) prob += 3;
   else if (timeHorizonMonths >= 12) prob += 1;
 
   return Math.round(clamp(prob, 5, 95));
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Helpers
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 function emptyOutput(): OptimizerOutput {
   return {
@@ -488,13 +805,10 @@ function emptyOutput(): OptimizerOutput {
     cashWeightPct: 100,
     actions: [],
     riskSummary: {
-      expectedReturn: 0,
-      portfolioVolatility: 0,
-      concentrationRisk: 0,
-      diversificationScore: 1,
-      maxDrawdownEstimate: 0,
-      cryptoAllocationPct: 0,
+      expectedReturn: 0, portfolioVolatility: 0, concentrationRisk: 0,
+      diversificationScore: 1, maxDrawdownEstimate: 0, cryptoAllocationPct: 0,
+      avgPairwiseCorrelation: 0, tickersWithVolData: 0,
     },
-    metadata: { candidatesConsidered: 0, constraintsActive: [] },
+    metadata: { candidatesConsidered: 0, constraintsActive: [], objectiveValue: 0, solverIterations: 0 },
   };
 }

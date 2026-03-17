@@ -33,6 +33,7 @@ import {
   type OptimizerPortfolioAction,
   type OptimizerOutput,
   type CalibrationMap,
+  type CovarianceData,
 } from '../../shared/lib/optimizer-core.js';
 import type { AssetType } from '../../shared/types/assets.js';
 
@@ -135,42 +136,82 @@ async function loadScores(supabase: SB, dateStr: string): Promise<OptimizerTicke
 }
 
 // ---------------------------------------------------------------------------
-// Historical volatility loader
+// Historical covariance data loader (vols + pairwise correlations)
 // ---------------------------------------------------------------------------
 
-async function loadTickerVolatilities(supabase: SB, tickers: string[]): Promise<Map<string, number>> {
-  const vols = new Map<string, number>();
-  if (tickers.length === 0) return vols;
+async function loadCovarianceData(supabase: SB, tickers: string[]): Promise<CovarianceData> {
+  const volatilities = new Map<string, number>();
+  const correlations = new Map<string, number>();
+  if (tickers.length === 0) return { volatilities, correlations };
 
   const { data } = await supabase
     .from('price_history')
-    .select('ticker, close')
+    .select('ticker, close, date')
     .in('ticker', tickers)
     .order('date', { ascending: true })
     .limit(tickers.length * 120);
 
-  if (!data || data.length === 0) return vols;
+  if (!data || data.length === 0) return { volatilities, correlations };
 
   const byTicker = new Map<string, number[]>();
+  const datesByTicker = new Map<string, string[]>();
   for (const row of data) {
     const t = row.ticker as string;
-    if (!byTicker.has(t)) byTicker.set(t, []);
+    if (!byTicker.has(t)) { byTicker.set(t, []); datesByTicker.set(t, []); }
     byTicker.get(t)!.push(Number(row.close));
+    datesByTicker.get(t)!.push(row.date as string);
   }
 
+  const returnsByTicker = new Map<string, Map<string, number>>();
   for (const [ticker, closes] of byTicker) {
+    const dates = datesByTicker.get(ticker)!;
     if (closes.length < 20) continue;
     const returns: number[] = [];
+    const returnMap = new Map<string, number>();
     for (let i = 1; i < closes.length; i++) {
-      if (closes[i - 1]! > 0) returns.push(Math.log(closes[i]! / closes[i - 1]!));
+      if (closes[i - 1]! > 0) {
+        const r = Math.log(closes[i]! / closes[i - 1]!);
+        returns.push(r);
+        returnMap.set(dates[i]!, r);
+      }
     }
     if (returns.length < 15) continue;
     const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
     const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1);
-    vols.set(ticker, Math.sqrt(variance * 252));
+    volatilities.set(ticker, Math.sqrt(variance * 252));
+    returnsByTicker.set(ticker, returnMap);
   }
 
-  return vols;
+  // Pairwise correlations (for tickers in the portfolio, keep it bounded)
+  const tickersWithReturns = [...returnsByTicker.keys()].slice(0, 30); // limit pairs for speed
+  for (let i = 0; i < tickersWithReturns.length; i++) {
+    const tA = tickersWithReturns[i]!;
+    const rA = returnsByTicker.get(tA)!;
+    for (let j = i + 1; j < tickersWithReturns.length; j++) {
+      const tB = tickersWithReturns[j]!;
+      const rB = returnsByTicker.get(tB)!;
+      const pairsA: number[] = []; const pairsB: number[] = [];
+      for (const [date, retA] of rA) {
+        const retB = rB.get(date);
+        if (retB !== undefined) { pairsA.push(retA); pairsB.push(retB); }
+      }
+      if (pairsA.length < 15) continue;
+      const mA = pairsA.reduce((s, v) => s + v, 0) / pairsA.length;
+      const mB = pairsB.reduce((s, v) => s + v, 0) / pairsB.length;
+      let cov = 0, vA = 0, vB = 0;
+      for (let k = 0; k < pairsA.length; k++) {
+        const dA = pairsA[k]! - mA; const dB = pairsB[k]! - mB;
+        cov += dA * dB; vA += dA * dA; vB += dB * dB;
+      }
+      const denom = Math.sqrt(vA * vB);
+      if (denom > 0) {
+        const key = tA < tB ? `${tA}|${tB}` : `${tB}|${tA}`;
+        correlations.set(key, cov / denom);
+      }
+    }
+  }
+
+  return { volatilities, correlations };
 }
 
 // ---------------------------------------------------------------------------
@@ -300,8 +341,8 @@ async function runForPortfolio(
     }
   }
 
-  // Load volatilities for risk metrics
-  const tickerVols = await loadTickerVolatilities(supabase, allTickers.slice(0, 100));
+  // Load covariance data (volatilities + pairwise correlations)
+  const covData = await loadCovarianceData(supabase, allTickers.slice(0, 100));
 
   // Run shared optimizer core
   const userParams: OptimizerUserParams = {
@@ -313,7 +354,7 @@ async function runForPortfolio(
     maxDrawdownLimitPct: maxDrawdownPct,
   };
 
-  const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, tickerVols, calibration);
+  const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, covData, calibration);
 
   // Persist portfolio_risk_metrics
   await supabase.from('portfolio_risk_metrics').upsert({
