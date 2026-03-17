@@ -1128,13 +1128,13 @@ function mapRecommendationItem(row: Record<string, unknown>): RecommendationItem
     ticker: row.ticker as string,
     action: row.action as RecommendationItem['action'],
     urgency: row.urgency as RecommendationItem['urgency'],
-    currentAllocationPct: row.current_allocation_pct as number,
-    targetAllocationPct: row.target_allocation_pct as number,
+    currentAllocationPct: Number(row.current_allocation_pct ?? 0),
+    targetAllocationPct: Number(row.target_allocation_pct ?? 0),
     llmReasoning: row.llm_reasoning as string,
-    confidence: row.confidence as number,
+    confidence: Number(row.confidence ?? 0),
     rulesEngineApplied: row.rules_engine_applied as boolean,
     rulesEngineNote: row.rules_engine_note as string | null,
-    priority: row.priority as number,
+    priority: Number(row.priority ?? 0),
   };
 }
 

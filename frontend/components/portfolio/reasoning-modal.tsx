@@ -55,13 +55,13 @@ export function ReasoningModal({ open, onClose, recommendationId, synthesisRunId
           ticker: recData.ticker,
           action: recData.action,
           urgency: recData.urgency,
-          currentAllocationPct: recData.current_allocation_pct,
-          targetAllocationPct: recData.target_allocation_pct,
+          currentAllocationPct: Number(recData.current_allocation_pct ?? 0),
+          targetAllocationPct: Number(recData.target_allocation_pct ?? 0),
           llmReasoning: recData.llm_reasoning,
-          confidence: recData.confidence,
+          confidence: Number(recData.confidence ?? 0),
           rulesEngineApplied: recData.rules_engine_applied,
           rulesEngineNote: recData.rules_engine_note,
-          priority: recData.priority,
+          priority: Number(recData.priority ?? 0),
         };
         setItem(mappedItem);
 
@@ -178,10 +178,10 @@ export function ReasoningModal({ open, onClose, recommendationId, synthesisRunId
                 Weight Adjustment Today
               </h3>
               <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="text-gray-400">Technical: {(weights.technical * 100).toFixed(0)}%</div>
-                <div className="text-gray-400">Sentiment: {(weights.sentiment * 100).toFixed(0)}%</div>
-                <div className="text-gray-400">Fundamental: {(weights.fundamental * 100).toFixed(0)}%</div>
-                <div className="text-gray-400">Regime: {(weights.regime * 100).toFixed(0)}%</div>
+                <div className="text-gray-400">Technical: {(Number(weights.technical) * 100).toFixed(0)}%</div>
+                <div className="text-gray-400">Sentiment: {(Number(weights.sentiment) * 100).toFixed(0)}%</div>
+                <div className="text-gray-400">Fundamental: {(Number(weights.fundamental) * 100).toFixed(0)}%</div>
+                <div className="text-gray-400">Regime: {(Number(weights.regime) * 100).toFixed(0)}%</div>
               </div>
               {weights.reasoning && (
                 <p className="text-xs text-gray-500 mt-2">{weights.reasoning}</p>
