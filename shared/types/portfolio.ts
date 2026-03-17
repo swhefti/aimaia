@@ -60,4 +60,9 @@ export interface PortfolioRiskMetrics {
   maxDrawdownPct: number;          // decimal, e.g. 0.12 for 12%
   diversificationScore: number;    // [0.0, 1.0]
   concentrationRisk: number;       // [0.0, 1.0], higher = more concentrated
+  avgPairwiseCorrelation: number;  // average pairwise correlation in portfolio
+  cryptoAllocationPct: number;     // 0–100
+  largestPositionPct: number;      // 0–100
+  tickersWithVolData: number;      // count of positions with real historical vol
+  portfolioExpectedReturn: number; // annualized decimal
 }

@@ -74,10 +74,12 @@ export interface OptimizerRiskSummary {
   diversificationScore: number;
   maxDrawdownEstimate: number;
   cryptoAllocationPct: number;
-  /** Average pairwise correlation in portfolio (new in v2, 0 if no data) */
+  /** Average pairwise correlation in portfolio (0 if no data) */
   avgPairwiseCorrelation: number;
   /** Number of tickers with real historical vol data */
   tickersWithVolData: number;
+  /** Largest single position weight (0-100) */
+  largestPositionPct: number;
 }
 
 export interface OptimizerOutput {
@@ -668,15 +670,37 @@ function generateActions(
     else if (Math.abs(delta) > 3 || confidence > 0.6) urgency = 'medium';
     else urgency = 'low';
 
-    // Build portfolio-level rationale
+    // Build portfolio-level rationale with risk context
     let rationale: string | undefined;
     const vol = getVol(ticker, cov);
-    if (action === 'SELL' && confidence < 0.4) {
-      rationale = `Low confidence (${(confidence * 100).toFixed(0)}%) — reducing uncertain exposure`;
+    const assetType = ASSET_TYPE_MAP[ticker];
+    const clusters = getTickerClusters(ticker);
+    const isCrypto = assetType === 'crypto';
+
+    if (action === 'SELL') {
+      if (confidence < 0.4) {
+        rationale = `Low confidence (${(confidence * 100).toFixed(0)}%) — reducing uncertain exposure`;
+      } else {
+        rationale = 'Optimizer removed this position to improve portfolio risk/return balance';
+      }
     } else if (action === 'BUY') {
-      rationale = vol > 0.4 ? `New position (high vol ${(vol * 100).toFixed(0)}% — sized conservatively)` : 'New position with favorable risk/return profile';
-    } else if (action === 'REDUCE' && vol > 0.35) {
-      rationale = `Reducing to manage portfolio volatility (ticker vol ${(vol * 100).toFixed(0)}%)`;
+      const parts: string[] = ['New position'];
+      if (vol > 0.4) parts.push(`high vol ${(vol * 100).toFixed(0)}% — sized conservatively`);
+      else parts.push('favorable risk/return profile');
+      if (clusters.length > 0) parts.push(`adds ${clusters[0]} exposure`);
+      rationale = parts.join(' — ');
+    } else if (action === 'REDUCE') {
+      const parts: string[] = [];
+      if (vol > 0.35) parts.push(`ticker vol ${(vol * 100).toFixed(0)}%`);
+      if (currentWeight > 25) parts.push(`position at ${currentWeight.toFixed(0)}% is overweight`);
+      if (isCrypto && currentWeight > 10) parts.push('managing crypto exposure');
+      rationale = parts.length > 0 ? `Reducing: ${parts.join(', ')}` : undefined;
+    } else if (action === 'ADD') {
+      if (confidence > 0.6 && vol < 0.3) {
+        rationale = 'Strong signal with moderate risk — increasing position';
+      } else if (clusters.length > 0) {
+        rationale = `Increasing ${clusters[0]} allocation based on score improvement`;
+      }
     }
 
     actions.push({
@@ -749,6 +773,12 @@ function computeRiskSummary(
     if (cov.volatilities.has(t)) tickersWithVol++;
   }
 
+  // Largest position
+  let largestPosPct = 0;
+  for (const tw of targetWeights) {
+    if (tw.weightPct > largestPosPct) largestPosPct = tw.weightPct;
+  }
+
   return {
     expectedReturn: expRet,
     portfolioVolatility: portfolioVol,
@@ -758,6 +788,7 @@ function computeRiskSummary(
     cryptoAllocationPct: cryptoAlloc,
     avgPairwiseCorrelation: avgCorr,
     tickersWithVolData: tickersWithVol,
+    largestPositionPct: largestPosPct,
   };
 }
 
@@ -807,7 +838,7 @@ function emptyOutput(): OptimizerOutput {
     riskSummary: {
       expectedReturn: 0, portfolioVolatility: 0, concentrationRisk: 0,
       diversificationScore: 1, maxDrawdownEstimate: 0, cryptoAllocationPct: 0,
-      avgPairwiseCorrelation: 0, tickersWithVolData: 0,
+      avgPairwiseCorrelation: 0, tickersWithVolData: 0, largestPositionPct: 0,
     },
     metadata: { candidatesConsidered: 0, constraintsActive: [], objectiveValue: 0, solverIterations: 0 },
   };

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { UserProfile, Portfolio, PortfolioPosition, PortfolioValuation } from '@shared/types/portfolio';
+import type { UserProfile, Portfolio, PortfolioPosition, PortfolioValuation, PortfolioRiskMetrics } from '@shared/types/portfolio';
 import type { RecommendationRun, RecommendationItem, UserDecisionValue } from '@shared/types/recommendations';
 import type { AgentScore } from '@shared/types/scores';
 import { ASSET_TYPE_MAP, getWeightsForTicker } from '@shared/lib/constants';
@@ -216,6 +216,35 @@ export async function getPortfolioValuations(
     cumulativeReturnPct: row.cumulative_return_pct as number,
     goalProbabilityPct: row.goal_probability_pct as number,
   }));
+}
+
+// ---------- Portfolio Risk Metrics ----------
+
+export async function getLatestRiskMetrics(
+  supabase: SupabaseClient,
+  portfolioId: string,
+): Promise<PortfolioRiskMetrics | null> {
+  const { data, error } = await supabase
+    .from('portfolio_risk_metrics')
+    .select('*')
+    .eq('portfolio_id', portfolioId)
+    .order('date', { ascending: false })
+    .limit(1)
+    .single();
+  if (error || !data) return null;
+  return {
+    portfolioId: data.portfolio_id as string,
+    date: data.date as string,
+    volatility: Number(data.volatility ?? 0),
+    maxDrawdownPct: Number(data.max_drawdown_pct ?? 0),
+    diversificationScore: Number(data.diversification_score ?? 0),
+    concentrationRisk: Number(data.concentration_risk ?? 0),
+    avgPairwiseCorrelation: Number(data.avg_pairwise_correlation ?? 0),
+    cryptoAllocationPct: Number(data.crypto_allocation_pct ?? 0),
+    largestPositionPct: Number(data.largest_position_pct ?? 0),
+    tickersWithVolData: Number(data.tickers_with_vol_data ?? 0),
+    portfolioExpectedReturn: Number(data.portfolio_expected_return ?? 0),
+  };
 }
 
 // ---------- Recommendations ----------

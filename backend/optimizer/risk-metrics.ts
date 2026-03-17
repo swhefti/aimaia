@@ -26,6 +26,11 @@ export function computePortfolioRiskMetrics(
     maxDrawdownPct: computeMaxDrawdown(portfolioValuations ?? []),
     diversificationScore: computeDiversificationScore(positions),
     concentrationRisk: computeConcentrationRisk(positions),
+    avgPairwiseCorrelation: 0,
+    cryptoAllocationPct: 0,
+    largestPositionPct: 0,
+    tickersWithVolData: 0,
+    portfolioExpectedReturn: 0,
   };
 }
 

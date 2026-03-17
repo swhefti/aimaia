@@ -220,19 +220,34 @@ async function loadCovarianceData(supabase: SB, tickers: string[]): Promise<Cova
 
 function buildExplanationPrompt(
   actions: OptimizerPortfolioAction[],
-  ctx: { totalValue: number; cashPct: number; goalProbPct: number; riskProfile: string },
+  ctx: {
+    totalValue: number; cashPct: number; goalProbPct: number; riskProfile: string;
+    portfolioVol?: number; concentrationRisk?: number; avgCorrelation?: number;
+    diversificationScore?: number; cryptoAllocationPct?: number;
+  },
   macroEvents: string[],
 ): string {
   const lines: string[] = [];
   lines.push('You are an investment communication writer. The portfolio optimizer has determined the following target changes.');
-  lines.push('Your job is to explain WHY these changes make sense in plain language. Do NOT suggest alternatives or override the optimizer.');
+  lines.push('Your job is to explain WHY these changes make sense in plain language, including how they affect portfolio risk. Do NOT suggest alternatives or override the optimizer.');
   lines.push('');
-  lines.push(`Portfolio: $${ctx.totalValue.toLocaleString()} | Cash: ${ctx.cashPct.toFixed(1)}% | Risk: ${ctx.riskProfile}`);
+  lines.push(`Portfolio: $${ctx.totalValue.toLocaleString()} | Cash: ${ctx.cashPct.toFixed(1)}% | Risk profile: ${ctx.riskProfile}`);
+
+  // Include risk context for richer explanations
+  if (ctx.portfolioVol !== undefined) {
+    lines.push(`Risk metrics: Vol ${(ctx.portfolioVol * 100).toFixed(1)}% | Diversification ${((ctx.diversificationScore ?? 0) * 100).toFixed(0)}% | Avg correlation ${((ctx.avgCorrelation ?? 0) * 100).toFixed(0)}%`);
+    if ((ctx.cryptoAllocationPct ?? 0) > 0) {
+      lines.push(`Crypto allocation: ${(ctx.cryptoAllocationPct ?? 0).toFixed(1)}%`);
+    }
+  }
+
   lines.push('');
   lines.push('OPTIMIZER ACTIONS:');
   for (const a of actions) {
     if (a.action === 'HOLD' && Math.abs(a.deltaWeightPct) < 1) continue;
-    lines.push(`${a.action} ${a.ticker}: ${a.currentWeightPct.toFixed(1)}% -> ${a.targetWeightPct.toFixed(1)}% (delta ${a.deltaWeightPct > 0 ? '+' : ''}${a.deltaWeightPct.toFixed(1)}%)`);
+    let line = `${a.action} ${a.ticker}: ${a.currentWeightPct.toFixed(1)}% -> ${a.targetWeightPct.toFixed(1)}% (delta ${a.deltaWeightPct > 0 ? '+' : ''}${a.deltaWeightPct.toFixed(1)}%)`;
+    if (a.rationale) line += ` [${a.rationale}]`;
+    lines.push(line);
   }
   if (macroEvents.length > 0) {
     lines.push('');
@@ -240,6 +255,7 @@ function buildExplanationPrompt(
     for (const e of macroEvents) lines.push(`- ${e}`);
   }
   lines.push('');
+  lines.push('When explaining actions, reference portfolio-level risk where relevant (concentration, diversification, volatility, correlation).');
   lines.push('Return ONLY valid JSON:');
   lines.push('{"portfolioNarrative": string (max 800 chars, plain language briefing), "actionExplanations": {"TICKER": "reason for this action", ...}, "goalStatus": "on_track"|"monitor"|"at_risk"|"off_track", "overallAssessment": string}');
   return lines.join('\n');
@@ -255,7 +271,11 @@ interface ExplanationOutput {
 async function generateExplanation(
   anthropic: Anthropic,
   actions: OptimizerPortfolioAction[],
-  ctx: { totalValue: number; cashPct: number; goalProbPct: number; riskProfile: string },
+  ctx: {
+    totalValue: number; cashPct: number; goalProbPct: number; riskProfile: string;
+    portfolioVol?: number; concentrationRisk?: number; avgCorrelation?: number;
+    diversificationScore?: number; cryptoAllocationPct?: number;
+  },
   macroEvents: string[],
   model: string,
   maxTokens: number,
@@ -356,7 +376,7 @@ async function runForPortfolio(
 
   const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, covData, calibration);
 
-  // Persist portfolio_risk_metrics
+  // Persist portfolio_risk_metrics (extended v2 fields)
   await supabase.from('portfolio_risk_metrics').upsert({
     portfolio_id: portfolioId,
     date: dateStr,
@@ -364,6 +384,11 @@ async function runForPortfolio(
     max_drawdown_pct: Math.min(1, optimizerResult.riskSummary.maxDrawdownEstimate),
     diversification_score: optimizerResult.riskSummary.diversificationScore,
     concentration_risk: optimizerResult.riskSummary.concentrationRisk,
+    avg_pairwise_correlation: optimizerResult.riskSummary.avgPairwiseCorrelation,
+    crypto_allocation_pct: optimizerResult.riskSummary.cryptoAllocationPct,
+    largest_position_pct: optimizerResult.riskSummary.largestPositionPct,
+    tickers_with_vol_data: optimizerResult.riskSummary.tickersWithVolData,
+    portfolio_expected_return: optimizerResult.riskSummary.expectedReturn,
   }, { onConflict: 'portfolio_id,date' }).then(({ error }) => {
     if (error) console.error(`    Risk metrics upsert error: ${error.message}`);
   });
@@ -403,7 +428,14 @@ async function runForPortfolio(
 
   const explanation = await generateExplanation(
     anthropic, optimizerResult.actions,
-    { totalValue, cashPct: optimizerResult.cashWeightPct, goalProbPct, riskProfile },
+    {
+      totalValue, cashPct: optimizerResult.cashWeightPct, goalProbPct, riskProfile,
+      portfolioVol: optimizerResult.riskSummary.portfolioVolatility,
+      concentrationRisk: optimizerResult.riskSummary.concentrationRisk,
+      avgCorrelation: optimizerResult.riskSummary.avgPairwiseCorrelation,
+      diversificationScore: optimizerResult.riskSummary.diversificationScore,
+      cryptoAllocationPct: optimizerResult.riskSummary.cryptoAllocationPct,
+    },
     macroEvents, synthesisModel, maxTokensSynthesis,
   );
 

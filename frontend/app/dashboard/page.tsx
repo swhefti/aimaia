@@ -40,8 +40,9 @@ import {
   getLatestPrices,
   upsertPortfolioValuation,
   getDecidedRecommendationIds,
+  getLatestRiskMetrics,
 } from '@/lib/queries';
-import type { UserProfile, Portfolio, PortfolioValuation } from '@shared/types/portfolio';
+import type { UserProfile, Portfolio, PortfolioValuation, PortfolioRiskMetrics } from '@shared/types/portfolio';
 import type { RecommendationRun, RecommendationItem } from '@shared/types/recommendations';
 import type { PortfolioPositionWithScore, TickerQuote } from '@/lib/queries';
 import type { AgentScore } from '@shared/types/scores';
@@ -92,6 +93,7 @@ export default function DashboardPage() {
   const [positions, setPositions] = useState<PortfolioPositionWithScore[]>([]);
   const [valuations, setValuations] = useState<PortfolioValuation[]>([]);
   const [run, setRun] = useState<RecommendationRun | null>(null);
+  const [riskMetrics, setRiskMetrics] = useState<PortfolioRiskMetrics | null>(null);
   const [items, setItems] = useState<RecommendationItem[]>([]);
   const [agentScores, setAgentScores] = useState<Record<string, AgentScore[]>>({});
   const [latestScores, setLatestScores] = useState<Record<string, number>>({});
@@ -431,14 +433,16 @@ export default function DashboardPage() {
         return;
       }
 
-      const [pos, vals, recRun, dbCash] = await Promise.all([
+      const [pos, vals, recRun, dbCash, latestRisk] = await Promise.all([
         getPortfolioPositions(supabase, userPortfolio.id),
         getPortfolioValuations(supabase, userPortfolio.id, 30),
         getLatestRecommendationRun(supabase, userPortfolio.id),
         getCashBalance(supabase, userPortfolio.id),
+        getLatestRiskMetrics(supabase, userPortfolio.id),
       ]);
       setPositions(pos);
       setRun(recRun);
+      setRiskMetrics(latestRisk);
       setCashBalanceState(dbCash);
 
       // Always compute a valuation from positions (source of truth)
@@ -1057,7 +1061,7 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <Logo size="sm" variant="dark" />
-            <span className="text-xs text-gray-500">(Version 0.73)</span>
+            <span className="text-xs text-gray-500">(Version 0.74)</span>
             {firstName && !isGuest && (
               <span className="text-sm text-gray-300">{firstName}</span>
             )}
@@ -1285,6 +1289,45 @@ export default function DashboardPage() {
               totalValue={totalValue}
               marketPrices={allPrices}
             />
+
+            {/* Risk Metrics */}
+            {riskMetrics && (
+              <Card padding="md">
+                <h3 className="text-sm font-medium text-gray-300 mb-3">Portfolio Risk</h3>
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Volatility</span>
+                    <span className="text-white font-medium">{(riskMetrics.volatility * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Diversification</span>
+                    <span className="text-white font-medium">{(riskMetrics.diversificationScore * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Concentration</span>
+                    <span className="text-white font-medium">{(riskMetrics.concentrationRisk * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Avg Correlation</span>
+                    <span className="text-white font-medium">{(riskMetrics.avgPairwiseCorrelation * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Max Drawdown Est.</span>
+                    <span className="text-white font-medium">{(riskMetrics.maxDrawdownPct * 100).toFixed(1)}%</span>
+                  </div>
+                  {riskMetrics.cryptoAllocationPct > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Crypto Allocation</span>
+                      <span className="text-white font-medium">{riskMetrics.cryptoAllocationPct.toFixed(1)}%</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Largest Position</span>
+                    <span className="text-white font-medium">{riskMetrics.largestPositionPct.toFixed(1)}%</span>
+                  </div>
+                </div>
+              </Card>
+            )}
 
             {/* Settings */}
             {profile && (
