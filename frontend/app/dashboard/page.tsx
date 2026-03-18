@@ -390,14 +390,16 @@ export default function DashboardPage() {
         if (retryPortfolio) {
           // Found it on retry — reload the full dashboard with it
           setPortfolio(retryPortfolio);
-          const [pos, vals, recRun, dbCash] = await Promise.all([
+          const [pos, vals, recRun, dbCash, latestRisk] = await Promise.all([
             getPortfolioPositions(supabase, retryPortfolio.id),
             getPortfolioValuations(supabase, retryPortfolio.id, 30),
             getLatestRecommendationRun(supabase, retryPortfolio.id),
             getCashBalance(supabase, retryPortfolio.id),
+            getLatestRiskMetrics(supabase, retryPortfolio.id),
           ]);
           setPositions(pos);
           setRun(recRun);
+          setRiskMetrics(latestRisk);
           setCashBalanceState(dbCash);
           if (vals.length > 0) setValuations(vals);
           setLoading(false);
@@ -412,14 +414,16 @@ export default function DashboardPage() {
           const portfolio3 = await getPortfolio(supabase, user.id);
           if (portfolio3) {
             setPortfolio(portfolio3);
-            const [pos, vals, recRun, dbCash] = await Promise.all([
+            const [pos, vals, recRun, dbCash, latestRisk] = await Promise.all([
               getPortfolioPositions(supabase, portfolio3.id),
               getPortfolioValuations(supabase, portfolio3.id, 30),
               getLatestRecommendationRun(supabase, portfolio3.id),
               getCashBalance(supabase, portfolio3.id),
+              getLatestRiskMetrics(supabase, portfolio3.id),
             ]);
             setPositions(pos);
             setRun(recRun);
+            setRiskMetrics(latestRisk);
             setCashBalanceState(dbCash);
             if (vals.length > 0) setValuations(vals);
             setLoading(false);

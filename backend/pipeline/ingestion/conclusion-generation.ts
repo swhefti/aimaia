@@ -111,10 +111,10 @@ async function generateOne(
   ctx: {
     scores: Record<string, { score: number; confidence: number; explanation: string }>;
     news: { headline: string; source: string }[];
-    asset?: { name: string; asset_type: string };
-    fundamentals?: { pe_ratio: number | null; revenue_growth_yoy: number | null; profit_margin: number | null; market_cap: number | null };
-    quote?: { last_price: number; pct_change: number };
-    prevConclusion?: { date: string; conclusion: string };
+    asset?: { name: string; asset_type: string } | undefined;
+    fundamentals?: { pe_ratio: number | null; revenue_growth_yoy: number | null; profit_margin: number | null; market_cap: number | null } | undefined;
+    quote?: { last_price: number; pct_change: number } | undefined;
+    prevConclusion?: { date: string; conclusion: string } | undefined;
   }
 ): Promise<ConclusionResult> {
   const assetName = ctx.asset?.name ?? ticker;

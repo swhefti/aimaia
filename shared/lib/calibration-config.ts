@@ -34,8 +34,11 @@ export function computeEligibility(params: {
   sampleCount30d: number;
   calibratedExpectedReturn: number | null;
   updatedAt: string | null;
+  /** Override the compile-time kill switch with a DB-driven value. If omitted, uses CALIBRATION_LIVE_ENABLED. */
+  liveEnabledOverride?: boolean | undefined;
 }): { eligible: boolean; reason: string } {
-  if (!CALIBRATION_LIVE_ENABLED) {
+  const liveEnabled = params.liveEnabledOverride ?? CALIBRATION_LIVE_ENABLED;
+  if (!liveEnabled) {
     return { eligible: false, reason: 'Global calibration kill switch is OFF' };
   }
 

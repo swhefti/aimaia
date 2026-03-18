@@ -20,6 +20,7 @@ import { loadEnv } from './lib/env.js';
 loadEnv();
 
 import { getServiceSupabase } from './lib/supabase.js';
+import { getConfigNumber } from './lib/config.js';
 import {
   ASSET_TYPE_MAP, ASSET_UNIVERSE, getWeightsForTicker,
   CASH_FLOOR_PCT, MAX_POSITION_PCT, SCORE_THRESHOLDS,
@@ -548,6 +549,10 @@ async function runBacktest(supabase: SB, fromDate: string, toDate: string): Prom
 async function calibrate(supabase: SB): Promise<void> {
   console.log('[Calibrate] Computing calibrated expected-return mapping from score_outcomes...');
 
+  // Read DB-driven kill switch for eligibility computation
+  const calLiveEnabled = await getConfigNumber('calibration_live_enabled', 1);
+  const liveEnabledOverride = calLiveEnabled !== 0;
+
   const { data: outcomes } = await supabase
     .from('score_outcomes')
     .select('composite_score, confidence, asset_type, return_7d, return_30d, score_bucket')
@@ -626,6 +631,7 @@ async function calibrate(supabase: SB): Promise<void> {
       sampleCount30d: data.returns30d.length,
       calibratedExpectedReturn: calibratedER,
       updatedAt: now,
+      liveEnabledOverride,
     });
 
     rows.push({

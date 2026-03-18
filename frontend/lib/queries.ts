@@ -20,6 +20,32 @@ export interface SynthesisRawOutput {
   createdAt: string;
 }
 
+function toNumber(value: unknown, fallback = 0): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizeNumberRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [key, toNumber(entryValue)])
+  );
+}
+
+function mapAgentScoreRow(row: Record<string, unknown>, tickerOverride?: string): AgentScore {
+  return {
+    ticker: tickerOverride ?? (row.ticker as string),
+    date: row.date as string,
+    agentType: row.agent_type as AgentScore['agentType'],
+    score: toNumber(row.score),
+    confidence: toNumber(row.confidence),
+    componentScores: normalizeNumberRecord(row.component_scores),
+    explanation: (row.explanation as string) || '',
+    dataFreshness: row.data_freshness as AgentScore['dataFreshness'],
+    agentVersion: row.agent_version as string,
+  };
+}
+
 // ---------- User Profile ----------
 
 export async function getUserProfile(supabase: SupabaseClient, userId: string): Promise<UserProfile | null> {
@@ -299,17 +325,7 @@ export async function getAgentScoresForTicker(
   }
   const { data, error } = await query;
   if (error) throw error;
-  const allScores = (data || []).map((row: Record<string, unknown>) => ({
-    ticker: row.ticker as string,
-    date: row.date as string,
-    agentType: row.agent_type as AgentScore['agentType'],
-    score: row.score as number,
-    confidence: row.confidence as number,
-    componentScores: (row.component_scores as Record<string, number>) || {},
-    explanation: row.explanation as string,
-    dataFreshness: row.data_freshness as AgentScore['dataFreshness'],
-    agentVersion: row.agent_version as string,
-  }));
+  const allScores = (data || []).map((row: Record<string, unknown>) => mapAgentScoreRow(row));
 
   // Deduplicate by agentType — keep the most recent (first, since ordered by date desc)
   const seen = new Set<string>();
@@ -359,18 +375,7 @@ export async function getAgentScoresForTicker(
       regimeData = fallback.data;
     }
     if (regimeData && regimeData.length > 0) {
-      const r = regimeData[0]!;
-      scores.push({
-        ticker,
-        date: r.date as string,
-        agentType: 'market_regime',
-        score: r.score as number,
-        confidence: r.confidence as number,
-        componentScores: (r.component_scores as Record<string, number>) || {},
-        explanation: r.explanation as string,
-        dataFreshness: r.data_freshness as AgentScore['dataFreshness'],
-        agentVersion: r.agent_version as string,
-      });
+      scores.push(mapAgentScoreRow(regimeData[0] as Record<string, unknown>, ticker));
     }
   }
 
@@ -670,10 +675,10 @@ export async function getAllLatestScores(
     if (!existing || (row.date as string) > (existing.date as string)) {
       bestByKey.set(key, {
         ticker: row.ticker as string,
-        score: row.score as number,
+        score: toNumber(row.score),
         agent_type: row.agent_type as string,
         date: row.date as string,
-        confidence: row.confidence as number,
+        confidence: toNumber(row.confidence),
         data_freshness: (row.data_freshness as string) ?? 'current',
       });
     }
@@ -1000,17 +1005,7 @@ export async function getAllAgentScoresGrouped(
   for (const row of bestByKey.values()) {
     const ticker = row.ticker as string;
     if (!grouped[ticker]) grouped[ticker] = [];
-    grouped[ticker].push({
-      ticker,
-      date: row.date as string,
-      agentType: row.agent_type as AgentScore['agentType'],
-      score: Number(row.score),
-      confidence: Number(row.confidence),
-      componentScores: (row.component_scores as Record<string, number>) || {},
-      explanation: (row.explanation as string) || '',
-      dataFreshness: row.data_freshness as AgentScore['dataFreshness'],
-      agentVersion: row.agent_version as string,
-    });
+    grouped[ticker].push(mapAgentScoreRow(row as Record<string, unknown>, ticker));
   }
 
   // Inject regime scores into each real ticker's score array
