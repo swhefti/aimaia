@@ -50,7 +50,7 @@ import { formatCurrency, computeGoalProbability, probabilityToGoalStatus } from 
 import { getWeightsForTicker, ASSET_TYPE_MAP } from '@shared/lib/constants';
 import { DataFreshnessBar } from '@/components/data-freshness-bar';
 import { RiskReportModal } from '@/components/dashboard/risk-report-modal';
-import { LogOut, Plus, Minus, BarChart3, Settings, ShieldAlert } from 'lucide-react';
+import { LogOut, Plus, Minus, BarChart3, Settings, ShieldAlert, CheckCircle } from 'lucide-react';
 
 type AgentWeights = { technical: number; sentiment: number; fundamental: number; regime: number };
 type WeightsConfig = { stock: AgentWeights; crypto: AgentWeights; cryptoSentimentMissing: AgentWeights } | null;
@@ -1220,6 +1220,17 @@ export default function DashboardPage() {
                       onShowReasoning={(id) => setReasoningId(id)}
                     />
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* No changes needed message — shown when analysis ran but produced no actions */}
+            {!isGuest && run && recommendations.length === 0 && opportunities.length === 0 && positions.length > 0 && (
+              <div className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
+                <CheckCircle className="h-5 w-5 text-emerald-400 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-emerald-300">No changes recommended today</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Your portfolio is within target ranges. We continue to monitor daily.</p>
                 </div>
               </div>
             )}

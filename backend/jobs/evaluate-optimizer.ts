@@ -424,6 +424,7 @@ async function runBacktest(supabase: SB, fromDate: string, toDate: string): Prom
     maxPositions: 8, assetTypes: ['stock', 'etf', 'crypto'] as AssetType[],
     riskProfile: 'balanced', volatilityTolerance: 'balanced',
     goalReturnPct: 0.07, maxDrawdownLimitPct: 0.15,
+    timeHorizonMonths: 12,
   };
 
   const { data: scoreDates } = await supabase

@@ -46,6 +46,7 @@ export interface OptimizerUserParams {
   volatilityTolerance: VolatilityTolerance;
   goalReturnPct: number;      // decimal, e.g. 0.07
   maxDrawdownLimitPct: number; // decimal, e.g. 0.15
+  timeHorizonMonths?: number;  // longer horizons → wider rebalance bands, fewer daily changes
 }
 
 export type OptimizerActionType = 'BUY' | 'ADD' | 'REDUCE' | 'SELL' | 'HOLD';
@@ -303,6 +304,7 @@ interface OptimizerConfig {
 
 function deriveConfig(params: OptimizerUserParams): OptimizerConfig {
   const { riskProfile, volatilityTolerance } = params;
+  const horizonMonths = params.timeHorizonMonths ?? 12;
 
   let riskAversion = 3.0;
   if (riskProfile === 'conservative') riskAversion = 6.0;
@@ -314,10 +316,19 @@ function deriveConfig(params: OptimizerUserParams): OptimizerConfig {
   if (riskProfile === 'conservative') concentrationAversion = 2.0;
   else if (riskProfile === 'aggressive') concentrationAversion = 0.4;
 
-  const turnoverPenalty = 0.005; // ~50bps per unit of turnover
+  // Longer horizons → higher turnover penalty (less frequent trading is better)
+  const horizonTurnoverScale = horizonMonths >= 24 ? 1.8 : horizonMonths >= 12 ? 1.2 : 1.0;
+  const turnoverPenalty = 0.005 * horizonTurnoverScale;
   const frictionPenalty = RC.frictionPerTrade;
 
-  const rebalanceBandPct = riskProfile === 'aggressive' ? 1.5 : riskProfile === 'conservative' ? 3.0 : 2.0;
+  // Scale rebalance bands by time horizon:
+  // Short-term (<6mo): use base bands — active management makes sense
+  // Medium (6-18mo): widen 1.5x — reduce churn
+  // Long-term (18+mo): widen 2x — only act on significant changes
+  const baseRebalanceBand = riskProfile === 'aggressive' ? 1.5 : riskProfile === 'conservative' ? 3.0 : 2.0;
+  const horizonBandScale = horizonMonths >= 18 ? 2.0 : horizonMonths >= 6 ? 1.5 : 1.0;
+  const rebalanceBandPct = baseRebalanceBand * horizonBandScale;
+
   const minTradePct = RC.minTradePct;
   const clusterPenalty = riskProfile === 'conservative' ? 1.5 : 0.8;
 
@@ -637,7 +648,7 @@ export function runOptimizerCore(
   const objValue = computeObjective(tickers, optimalWeights, expectedReturns, cov, currentWeightMap, config, hasExisting);
 
   // 9. Generate actions with friction awareness
-  const actions = generateActions(targetWeights, currentHoldings, config, scores, cov);
+  const actions = generateActions(targetWeights, currentHoldings, config, scores, cov, userParams.timeHorizonMonths);
 
   // 10. Compute risk summary
   const riskSummary = computeRiskSummary(tickers, optimalWeights, expectedReturns, cov, targetWeights);
@@ -666,6 +677,7 @@ function generateActions(
   config: OptimizerConfig,
   scores: OptimizerTickerScore[],
   cov: CovarianceData,
+  timeHorizonMonths?: number,
 ): OptimizerPortfolioAction[] {
   const actions: OptimizerPortfolioAction[] = [];
 
@@ -758,10 +770,20 @@ function generateActions(
   const order: Record<OptimizerActionType, number> = { SELL: 0, BUY: 1, REDUCE: 2, ADD: 3, HOLD: 4 };
   actions.sort((a, b) => order[a.action] - order[b.action] || Math.abs(b.deltaWeightPct) - Math.abs(a.deltaWeightPct));
 
-  // Enforce MAX_DAILY_CHANGES
+  // Enforce MAX_DAILY_CHANGES — scale down for longer horizons
+  // Long-term investors (18+mo) should see max 2 changes/day
+  // Medium-term (6-18mo): max 3 changes/day
+  // Short-term (<6mo): use configured max (default 5)
+  const horizon = timeHorizonMonths ?? 12;
+  const effectiveMaxChanges = horizon >= 18
+    ? Math.min(RC.maxDailyChanges, 2)
+    : horizon >= 6
+      ? Math.min(RC.maxDailyChanges, 3)
+      : RC.maxDailyChanges;
+
   const nonHold = actions.filter((a) => a.action !== 'HOLD');
-  if (nonHold.length > RC.maxDailyChanges) {
-    const kept = new Set(nonHold.slice(0, RC.maxDailyChanges).map((a) => a.ticker));
+  if (nonHold.length > effectiveMaxChanges) {
+    const kept = new Set(nonHold.slice(0, effectiveMaxChanges).map((a) => a.ticker));
     return actions.filter((a) => a.action === 'HOLD' || kept.has(a.ticker));
   }
 

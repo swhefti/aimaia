@@ -290,6 +290,7 @@ export async function POST(req: NextRequest) {
     // 4. Run shared optimizer core (no current holdings for onboarding)
     const userParams: OptimizerUserParams = {
       maxPositions, assetTypes, riskProfile, volatilityTolerance, goalReturnPct, maxDrawdownLimitPct,
+      timeHorizonMonths,
     };
 
     // Load volatilities for risk metrics

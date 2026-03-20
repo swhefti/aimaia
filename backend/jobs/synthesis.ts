@@ -405,6 +405,7 @@ async function runForPortfolio(
     volatilityTolerance: volatilityTolerance as 'moderate' | 'balanced' | 'tolerant',
     goalReturnPct,
     maxDrawdownLimitPct: maxDrawdownPct,
+    timeHorizonMonths,
   };
 
   const optimizerResult = runOptimizerCore(scoresCopy, userParams, currentHoldings, covData, calibration, optimizerConfig);
@@ -461,21 +462,25 @@ async function runForPortfolio(
   ]);
   const maxTokensSynthesis = typeof maxTokensSynthesisRaw === 'number' ? maxTokensSynthesisRaw : 4096;
 
-  const explanation = await generateExplanation(
-    anthropic, optimizerResult.actions,
-    {
-      totalValue, cashPct: optimizerResult.cashWeightPct, goalProbPct, riskProfile,
-      portfolioVol: optimizerResult.riskSummary.portfolioVolatility,
-      concentrationRisk: optimizerResult.riskSummary.concentrationRisk,
-      avgCorrelation: optimizerResult.riskSummary.avgPairwiseCorrelation,
-      diversificationScore: optimizerResult.riskSummary.diversificationScore,
-      cryptoAllocationPct: optimizerResult.riskSummary.cryptoAllocationPct,
-    },
-    macroEvents, synthesisModel, maxTokensSynthesis,
-    explainerPrompt || undefined,
-  );
+  // Skip LLM call if no actionable changes — save cost and avoid hallucinated narratives
+  const hasActionableChanges = optimizerResult.actions.some((a) => a.action !== 'HOLD');
+  const explanation = hasActionableChanges
+    ? await generateExplanation(
+        anthropic, optimizerResult.actions,
+        {
+          totalValue, cashPct: optimizerResult.cashWeightPct, goalProbPct, riskProfile,
+          portfolioVol: optimizerResult.riskSummary.portfolioVolatility,
+          concentrationRisk: optimizerResult.riskSummary.concentrationRisk,
+          avgCorrelation: optimizerResult.riskSummary.avgPairwiseCorrelation,
+          diversificationScore: optimizerResult.riskSummary.diversificationScore,
+          cryptoAllocationPct: optimizerResult.riskSummary.cryptoAllocationPct,
+        },
+        macroEvents, synthesisModel, maxTokensSynthesis,
+        explainerPrompt || undefined,
+      )
+    : null;
 
-  const llmSucceeded = !!explanation;
+  const llmSucceeded = hasActionableChanges ? !!explanation : true; // no-action days count as success
 
   // Create synthesis run record
   const { data: runRecord, error: runError } = await supabase.from('synthesis_runs').insert({
@@ -495,9 +500,13 @@ async function runForPortfolio(
     low_confidence_reasons: llmSucceeded ? [] : ['LLM explanation unavailable — recommendations from optimizer only'],
   });
 
-  const narrative = explanation?.portfolioNarrative
-    ?? `Optimizer-generated recommendations based on quantitative scores. ${optimizerResult.actions.filter((a) => a.action !== 'HOLD').length} position changes suggested.`;
-  const goalStatus = explanation?.goalStatus ?? 'monitor';
+  const nonHoldActions = optimizerResult.actions.filter((a) => a.action !== 'HOLD');
+  const narrative = nonHoldActions.length === 0
+    ? 'Your portfolio is well-positioned today. All holdings are within target ranges and no changes are recommended. We continue to monitor daily.'
+    : explanation?.portfolioNarrative
+      ?? `Optimizer-generated recommendations based on quantitative scores. ${nonHoldActions.length} position change${nonHoldActions.length !== 1 ? 's' : ''} suggested.`;
+  // No-action days default to 'on_track' since the portfolio needs no changes
+  const goalStatus = !hasActionableChanges ? 'on_track' : (explanation?.goalStatus ?? 'monitor');
 
   const { data: recRun, error: recRunError } = await supabase.from('recommendation_runs').insert({
     portfolio_id: portfolioId, run_date: dateStr, synthesis_run_id: runId,
